@@ -24,8 +24,9 @@ router = APIRouter()
 logger = structlog.get_logger()
 
 # ── Tier 1 combos — always refreshed regardless of usage ─────────────────────
-# These match the exact role/company_type strings used in the frontend dropdowns
-# and the prepopulate script. Keep in sync with scripts/prepopulate.py.
+# Canonical DB keys (NOT display names). The backend normalizes display names
+# (e.g. "Product Company" → "Indian Product Company") at the API boundary.
+# Keep in sync with scripts/prepopulate.py.
 
 TIER_1_COMBINATIONS = [
     # SDE / Software Engineer

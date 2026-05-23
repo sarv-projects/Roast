@@ -37,6 +37,39 @@ ROLE_TO_CATEGORY: dict[str, str] = {
     "Business Analyst": "ba",
 }
 
+
+# ── Company type aliases ─────────────────────────────────────────────────────
+# Display names (user-facing) → Canonical names (DB keys, signal lookups).
+# Keeps DB stable while allowing market-agnostic UI labels.
+
+_COMPANY_TYPE_ALIASES: dict[str, str] = {
+    "Product Company": "Indian Product Company",
+    "Service Company": "Indian Service Company",
+    "MNC (Non-FAANG)": "MNC India (Non-FAANG)",
+    # Passthrough for already-agnostic names
+    "FAANG / Big Tech": "FAANG / Big Tech",
+    "Startup": "Startup",
+    "Semiconductor / Hardware": "Semiconductor / Hardware",
+    "Consulting / IB": "Consulting / IB",
+}
+
+# Reverse map: canonical → display
+_CANONICAL_TO_DISPLAY: dict[str, str] = {v: k for k, v in _COMPANY_TYPE_ALIASES.items()}
+
+
+def normalize_company_type(display_name: str) -> str:
+    """Convert a user-facing company type to its canonical DB key."""
+    return _COMPANY_TYPE_ALIASES.get(display_name, display_name)
+
+
+def display_company_type(canonical_name: str) -> str:
+    """Convert a canonical DB key to its user-facing label."""
+    return _CANONICAL_TO_DISPLAY.get(canonical_name, canonical_name)
+
+
+# Convenience list for frontend / API docs
+COMPANY_TYPE_OPTIONS: list[str] = list(_COMPANY_TYPE_ALIASES.keys())
+
 EXPERIENCE_LEVEL_TO_BAND: dict[str, str] = {
     "Student": "fresher",
     "Fresher": "fresher",
@@ -135,6 +168,32 @@ def init_db() -> None:
                 company_type TEXT NOT NULL,
                 market TEXT NOT NULL DEFAULT 'India',
                 example_names TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS market_experience_defaults (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                experience_level TEXT NOT NULL UNIQUE,
+                dsa REAL DEFAULT 0.5,
+                projects REAL DEFAULT 0.7,
+                cgpa REAL DEFAULT 0.4,
+                experience REAL DEFAULT 0.5,
+                open_source REAL DEFAULT 0.4,
+                college_tier REAL DEFAULT 0.4,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS market_company_overrides (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_type TEXT NOT NULL UNIQUE,
+                dsa_lo REAL,
+                dsa_hi REAL,
+                projects_lo REAL,
+                projects_hi REAL,
+                cgpa_add REAL DEFAULT 0.0,
+                open_source_lo REAL,
+                open_source_hi REAL,
+                college_tier_add REAL DEFAULT 0.0,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
@@ -247,6 +306,59 @@ def get_role_weights(role_category: str) -> dict[str, float]:
     return {}
 
 
+def get_experience_defaults(experience_level: str) -> dict[str, float]:
+    """Return experience-level default weights from DB. Falls back to Junior if not found."""
+    conn = get_connection()
+    # Try exact match first, then fuzzy
+    row = conn.execute(
+        "SELECT dsa, projects, cgpa, experience, open_source, college_tier "
+        "FROM market_experience_defaults WHERE experience_level=?",
+        (experience_level,)
+    ).fetchone()
+    if not row and experience_level in ("Student / Fresher", "Mid-Level", "Staff / Principal"):
+        # Fuzzy fallback
+        fuzzy = experience_level.split()[0]
+        row = conn.execute(
+            "SELECT dsa, projects, cgpa, experience, open_source, college_tier "
+            "FROM market_experience_defaults WHERE experience_level=?",
+            (fuzzy,)
+        ).fetchone()
+    conn.close()
+    if row:
+        return {
+            "dsa": row["dsa"], "projects": row["projects"], "cgpa": row["cgpa"],
+            "experience": row["experience"], "open_source": row["open_source"],
+            "college_tier": row["college_tier"],
+        }
+    return {}
+
+
+def get_company_overrides(company_type: str) -> dict[str, any]:
+    """Return company-type weight overrides from DB. Returns empty dict if none."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT dsa_lo, dsa_hi, projects_lo, projects_hi, cgpa_add, "
+        "open_source_lo, open_source_hi, college_tier_add "
+        "FROM market_company_overrides WHERE company_type=?",
+        (company_type,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return {}
+    overrides: dict[str, any] = {}
+    if row["dsa_lo"] is not None and row["dsa_hi"] is not None:
+        overrides["dsa"] = (row["dsa_lo"], row["dsa_hi"])
+    if row["projects_lo"] is not None and row["projects_hi"] is not None:
+        overrides["projects"] = (row["projects_lo"], row["projects_hi"])
+    if row["cgpa_add"]:
+        overrides["cgpa_add"] = row["cgpa_add"]
+    if row["open_source_lo"] is not None and row["open_source_hi"] is not None:
+        overrides["open_source"] = (row["open_source_lo"], row["open_source_hi"])
+    if row["college_tier_add"]:
+        overrides["college_tier_add"] = row["college_tier_add"]
+    return overrides
+
+
 def get_city_multiplier(city: str, market: str) -> float:
     """Return salary multiplier for a city (1.0 = no adjustment)."""
     conn = get_connection()
@@ -288,7 +400,9 @@ def seed_all() -> None:
     _seed_company_naming()
     _seed_role_weights()
     _seed_city_multipliers()
-    logger.info("market_data_seeded", tables=6)
+    _seed_experience_defaults()
+    _seed_company_overrides()
+    logger.info("market_data_seeded", tables=8)
 
 
 def _seed_companies() -> None:
@@ -796,6 +910,60 @@ def _seed_city_multipliers() -> None:
                 "INSERT INTO market_city_multipliers (city, market, multiplier) VALUES (?, ?, ?)",
                 (city, market, mult)
             )
+    conn.close()
+
+
+def _seed_experience_defaults() -> None:
+    """Seed experience-level default weights into DB."""
+    conn = get_connection()
+    count = conn.execute("SELECT COUNT(*) FROM market_experience_defaults").fetchone()[0]
+    if count > 0:
+        conn.close()
+        return
+    defaults = [
+        # experience_level, dsa, projects, cgpa, experience, open_source, college_tier
+        ("Student", 0.5, 0.7, 0.6, 0.0, 0.3, 0.6),
+        ("Fresher", 0.5, 0.7, 0.6, 0.0, 0.3, 0.6),
+        ("Junior", 0.7, 0.75, 0.4, 0.5, 0.4, 0.3),
+        ("Mid", 0.5, 0.6, 0.2, 0.8, 0.4, 0.1),
+        ("Senior", 0.4, 0.4, 0.1, 0.9, 0.5, 0.05),
+        ("Staff", 0.3, 0.3, 0.0, 0.95, 0.5, 0.0),
+    ]
+    with conn:
+        for row in defaults:
+            conn.execute(
+                "INSERT INTO market_experience_defaults "
+                "(experience_level, dsa, projects, cgpa, experience, open_source, college_tier) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)", row
+            )
+    conn.close()
+
+
+def _seed_company_overrides() -> None:
+    """Seed company-type weight overrides into DB."""
+    conn = get_connection()
+    count = conn.execute("SELECT COUNT(*) FROM market_company_overrides").fetchone()[0]
+    if count > 0:
+        conn.close()
+        return
+    overrides = [
+        # company_type, dsa_lo, dsa_hi, projects_lo, projects_hi, cgpa_add, open_source_lo, open_source_hi, college_tier_add
+        ("FAANG / Big Tech", 0.9, 1.0, None, None, 0.0, 0.5, 0.5, 0.0),
+        ("Indian Service Company", 0.0, 0.3, None, None, 0.15, None, None, 0.1),
+        ("Startup", 0.2, 0.4, 0.85, 0.85, 0.0, 0.6, 0.6, 0.0),
+        ("Indian Product Company", 0.6, 0.8, 0.75, 0.75, 0.0, None, None, 0.0),
+        ("MNC India (Non-FAANG)", 0.5, 0.5, None, None, 0.1, None, None, 0.0),
+        ("Semiconductor / Hardware", 0.3, 0.3, 0.8, 0.8, 0.0, 0.2, 0.2, 0.0),
+        ("Consulting / IB", 0.2, 0.2, 0.5, 0.5, 0.1, None, None, 0.0),
+    ]
+    with conn:
+        for row in overrides:
+            conn.execute(
+                "INSERT INTO market_company_overrides "
+                "(company_type, dsa_lo, dsa_hi, projects_lo, projects_hi, cgpa_add, open_source_lo, open_source_hi, college_tier_add) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", row
+            )
+    conn.close()
     conn.close()
 
 

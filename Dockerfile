@@ -12,9 +12,8 @@ RUN npm run build
 # ── Stage 2: Python app ───────────────────────────────────────────────────────
 FROM python:3.12-slim
 
-# System deps for PyMuPDF
+# curl for healthcheck (PyMuPDF ≥1.23 bundles its own MuPDF, no system lib needed)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libmupdf \
     curl \
     && rm -rf /var/lib/apt/lists/*
 

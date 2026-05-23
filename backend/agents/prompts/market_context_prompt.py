@@ -27,27 +27,17 @@ Output a JSON object with these fields:
   "confidence": "HIGH or LOW"
 }
 
-Weight map rules — apply ALL that match, most specific rule wins:
+Weight map — synthesise from the signals:
+- dsa: how much does algorithmic problem-solving matter for THIS role in THIS market?
+- projects: how much does shipped work / portfolio matter?
+- cgpa: how much do academics matter at THIS experience level?
+- experience: how much does prior work history matter?
+- open_source: how much do public contributions / GitHub matter?
+- college_tier: how much does university reputation matter in THIS market?
 
-EXPERIENCE LEVEL RULES (apply first):
-- Student / Fresher: cgpa >= 0.6, college_tier >= 0.6, experience = 0.0, projects >= 0.7
-- Junior (0-2 YOE): cgpa = 0.4, college_tier = 0.3, experience = 0.5, projects >= 0.75
-- Mid-level (2-5 YOE): cgpa = 0.2, college_tier = 0.1, experience = 0.8, projects = 0.6
-- Senior (5-8 YOE): cgpa = 0.1, college_tier = 0.05, experience = 0.9, projects = 0.4
-- Staff / Principal (8+ YOE): cgpa = 0.0, college_tier = 0.0, experience = 0.95, projects = 0.3
+Use the market signals as your primary source. If signals say "LLM orchestration and RAG are top skills", then projects and open_source should be weighted high and dsa lower. If signals say "DSA + system design are critical", then dsa should be high.
 
-COMPANY TYPE RULES (apply on top of experience rules):
-- FAANG / Big Tech: dsa >= 0.9 (non-negotiable), open_source = 0.5
-- Indian Service Company: cgpa += 0.15 (add to experience-level value), dsa = 0.3 or lower, college_tier += 0.1
-- Early Stage Startup: dsa = 0.2-0.4, projects >= 0.85, open_source = 0.6
-- Indian Product Company: dsa = 0.6-0.8, projects >= 0.75
-- MNC India (Non-FAANG): dsa = 0.5, cgpa += 0.1 for freshers
-- Semiconductor / Hardware: dsa = 0.3, projects >= 0.8 (hardware projects), open_source = 0.2
-- Consulting / IB: dsa = 0.2, projects = 0.5, cgpa += 0.1
-
-MARKET RULES:
-- USA market: college_tier = 0.2 (less important than India), open_source = 0.6
-- Singapore / UK / UAE: similar to USA — college_tier less important, open_source more important
+Do NOT apply generic SDE defaults. The weights must reflect what the retrieved signals say about THIS specific role + company + market combo.
 
 Set confidence to LOW if market signals are thin or contradictory.
 """.strip()

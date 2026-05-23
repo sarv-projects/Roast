@@ -9,55 +9,12 @@ from backend.market_data import get_role_weights, ROLE_TO_CATEGORY
 
 logger = structlog.get_logger()
 
-# ── Weight map rules (enforced programmatically, not just in prompt) ──────────
+# ── Weight map enforcement (DB-driven, no hardcoding) ──────────────────────
 
-_JUNIOR_DEFAULTS: dict[str, float] = {
-    "dsa": 0.7, "projects": 0.75, "cgpa": 0.4,
-    "experience": 0.5, "open_source": 0.4, "college_tier": 0.3,
-}
-
-_FRESHER_DEFAULTS: dict[str, float] = {
-    "dsa": 0.5, "projects": 0.7, "cgpa": 0.6,
-    "experience": 0.0, "open_source": 0.3, "college_tier": 0.6,
-}
-
-_MID_DEFAULTS: dict[str, float] = {
-    "dsa": 0.5, "projects": 0.6, "cgpa": 0.2,
-    "experience": 0.8, "open_source": 0.4, "college_tier": 0.1,
-}
-
-_SENIOR_DEFAULTS: dict[str, float] = {
-    "dsa": 0.4, "projects": 0.4, "cgpa": 0.1,
-    "experience": 0.9, "open_source": 0.5, "college_tier": 0.05,
-}
-
-_STAFF_DEFAULTS: dict[str, float] = {
-    "dsa": 0.3, "projects": 0.3, "cgpa": 0.0,
-    "experience": 0.95, "open_source": 0.5, "college_tier": 0.0,
-}
-
-_EXPERIENCE_MAP: dict[str, dict[str, float]] = {
-    "Student": _FRESHER_DEFAULTS,
-    "Fresher": _FRESHER_DEFAULTS,
-    "Junior": _JUNIOR_DEFAULTS,
-    "Mid": _MID_DEFAULTS,
-    "Mid-Level": _MID_DEFAULTS,
-    "Senior": _SENIOR_DEFAULTS,
-    "Staff": _STAFF_DEFAULTS,
-    "Principal": _STAFF_DEFAULTS,
-}
-
-_COMPANY_OVERRIDES: dict[str, dict[str, tuple[float, float]]] = {
-    "FAANG":               {"dsa": (0.9, 1.0), "open_source": (0.5, 0.5)},
-    "FAANG / Big Tech":    {"dsa": (0.9, 1.0), "open_source": (0.5, 0.5)},
-    "Indian Service Company":  {"dsa": (0.0, 0.3), "cgpa_add": 0.15, "college_tier_add": 0.1},
-    "Startup":             {"dsa": (0.2, 0.4), "projects": (0.85, 0.85), "open_source": (0.6, 0.6)},
-    "Indian Product Company":  {"dsa": (0.6, 0.8), "projects": (0.75, 0.75)},
-    "MNC India (Non-FAANG)":  {"dsa": (0.5, 0.5), "cgpa_add": 0.1},
-    "Semiconductor":       {"dsa": (0.3, 0.3), "projects": (0.8, 0.8), "open_source": (0.2, 0.2)},
-    "Semiconductor / Hardware": {"dsa": (0.3, 0.3), "projects": (0.8, 0.8), "open_source": (0.2, 0.2)},
-    "Consulting / IB":     {"dsa": (0.2, 0.2), "projects": (0.5, 0.5), "cgpa_add": 0.1},
-}
+from backend.market_data import (
+    get_role_weights, get_experience_defaults, get_company_overrides,
+    ROLE_TO_CATEGORY,
+)
 
 
 def _enforce_weight_map(
@@ -66,20 +23,30 @@ def _enforce_weight_map(
     company_type: str,
     role: str = "",
 ) -> dict[str, float]:
-    """Apply the prompt's rules programmatically so the LLM can't ignore them."""
-    # Start with experience-level defaults
-    base = dict(_EXPERIENCE_MAP.get(experience_level, _JUNIOR_DEFAULTS))
+    """
+    Apply weight rules programmatically so the LLM can't ignore them.
+    All defaults/overrides come from market_config.db — no hardcoding.
+    """
+    # Start with experience-level defaults from DB
+    base = get_experience_defaults(experience_level)
+    if not base:
+        base = {
+            "dsa": 0.7, "projects": 0.7, "cgpa": 0.5,
+            "experience": 0.7, "open_source": 0.4, "college_tier": 0.4,
+        }
 
-    # Fetch role-specific weights
+    # Fetch role-specific weights from DB
     role_weights: dict[str, float] = {}
     if role:
         role_cat = ROLE_TO_CATEGORY.get(role, "")
         role_weights = get_role_weights(role_cat) if role_cat else {}
 
+    # Fetch company-type overrides from DB
+    company_rules = get_company_overrides(company_type)
+
     # Merge LLM values, clamping per company type rules.
     # BUT: if a role-specific weight exists for a key, the role is the authority
     # and company clamping does NOT apply to that key.
-    company_rules = _COMPANY_OVERRIDES.get(company_type, {})
     for key in base:
         has_role_override = key in role_weights and role_weights[key] is not None
         llm_val = llm_weights.get(key)
@@ -89,7 +56,7 @@ def _enforce_weight_map(
             base[key] = role_weights[key]
         elif llm_val is not None:
             rule = company_rules.get(key)
-            if rule:
+            if isinstance(rule, tuple) and len(rule) == 2:
                 lo, hi = rule
                 base[key] = max(lo, min(hi, llm_val))
             else:
@@ -230,9 +197,10 @@ Produce the MarketContextOutput JSON."""
         if not isinstance(data.get("red_flag_triggers"), list):
             data["red_flag_triggers"] = []
         if not isinstance(data.get("weight_map"), dict):
-            data["weight_map"] = {
+            db_defaults = get_experience_defaults(experience_level)
+            data["weight_map"] = db_defaults or {
                 "dsa": 0.7, "projects": 0.7, "cgpa": 0.5,
-                "experience": 0.7, "open_source": 0.4, "college_tier": 0.4
+                "experience": 0.7, "open_source": 0.4, "college_tier": 0.4,
             }
 
         # Enforce weight rules programmatically — the LLM can't be trusted to
@@ -260,10 +228,14 @@ Produce the MarketContextOutput JSON."""
 
     except Exception as e:
         logger.error("market_context_agent_failed", error=str(e), session_id=session_id)
+        db_defaults = get_experience_defaults(experience_level)
+        if not db_defaults:
+            db_defaults = {
+                "dsa": 0.7, "projects": 0.7, "cgpa": 0.5,
+                "experience": 0.7, "open_source": 0.4, "college_tier": 0.4,
+            }
         fallback_weights = _enforce_weight_map(
-            {"dsa": 0.7, "projects": 0.7, "cgpa": 0.5,
-             "experience": 0.7, "open_source": 0.4, "college_tier": 0.4},
-            experience_level, company_type, role,
+            db_defaults, experience_level, company_type, role,
         )
         return MarketContextOutput(
             market_norms=f"Standard {role} hiring norms for {market}",

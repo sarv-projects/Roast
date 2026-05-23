@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from backend.storage.session_store import create_session, get_session as redis_get_session
+from backend.market_data import normalize_company_type
 
 router = APIRouter()
 
@@ -20,7 +21,8 @@ class SessionInitResponse(BaseModel):
 
 @router.post("/session-init", response_model=SessionInitResponse)
 def session_init(body: SessionInitRequest):
-    session = create_session(body.role, body.market, body.company_type, body.experience_level)
+    canonical_ct = normalize_company_type(body.company_type)
+    session = create_session(body.role, body.market, canonical_ct, body.experience_level)
     return SessionInitResponse(
         session_id=session["session_id"],
         message="Session created. You may now upload your resume.",

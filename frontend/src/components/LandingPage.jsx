@@ -82,10 +82,10 @@ const ROLES = [
   'AI Agentic Engineer', 'DevOps / SRE', 'Platform Engineer', 'Product Manager', 'Business Analyst',
 ]
 
-// ⚠️ KEEP IN SYNC with backend/market_data.py:ROLE_TO_CATEGORY (company_type values)
+// ⚠️ KEEP IN SYNC with backend/market_data.py:COMPANY_TYPE_OPTIONS (display names)
 const COMPANY_TYPES = [
-  'Indian Product Company', 'Indian Service Company', 'FAANG / Big Tech',
-  'Startup', 'Consulting / IB', 'Semiconductor / Hardware', 'MNC India (Non-FAANG)',
+  'Product Company', 'Service Company', 'FAANG / Big Tech',
+  'Startup', 'Consulting / IB', 'Semiconductor / Hardware', 'MNC (Non-FAANG)',
 ]
 
 // ⚠️ KEEP IN SYNC with backend/market_data.py:ROLE_TO_CATEGORY (market values)

@@ -5,16 +5,13 @@ import structlog
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from backend.storage.redis_client import redis
-from backend.config import RESEND_API_KEY
+from backend.llm.langfuse_client import trace_feedback
+from backend.market_data import normalize_company_type
+import structlog
 
 router = APIRouter()
 logger = structlog.get_logger()
 
-TOKEN_TTL = 24 * 3600  # 24 hours
-EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
-
-
-# ── Token System ──────────────────────────────────────────────────────────────
 
 class TokenRequest(BaseModel):
     email: str
@@ -156,7 +153,8 @@ async def feedback(body: FeedbackRequest):
         redis.incr("counter:feedback_not_useful")
 
     # Track per-combination feedback for quality monitoring
-    combo_key = f"feedback:{body.role}:{body.company_type}:{body.market}"
+    canonical_ct = normalize_company_type(body.company_type)
+    combo_key = f"feedback:{body.role}:{canonical_ct}:{body.market}"
     if body.useful:
         redis.incr(f"{combo_key}:useful")
     else:

@@ -27,6 +27,7 @@ from backend.storage.session_store import get_session, update_session
 from backend.storage.redis_client import redis
 from backend.pipeline.orchestrator import run_pipeline, PipelineRequest
 from backend.routes.ws_manager import emit
+from backend.market_data import normalize_company_type
 import structlog
 
 router = APIRouter()
@@ -93,6 +94,9 @@ async def analyse(
     opted_in_corpus: bool = Form(default=False),
     file: UploadFile = File(...),
 ):
+    # Normalize company type from user-facing display name to canonical DB key
+    canonical_ct = normalize_company_type(company_type)
+
     # ── 1. Validate session ────────────────────────────────
     session = get_session(session_id)
     if session is None:
@@ -168,7 +172,7 @@ async def analyse(
         "resume_links": links,
         "page_count": pdf_result["page_count"],
         "role": role,
-        "company_type": company_type,
+        "company_type": canonical_ct,
         "market": market,
         "experience_level": experience_level,
     })
@@ -185,7 +189,7 @@ async def analyse(
         session_id=session_id,
         resume_text=pdf_result["full_text"],
         role=role,
-        company_type=company_type,
+        company_type=canonical_ct,
         market=market,
         experience_level=experience_level,
         user_context=user_context,

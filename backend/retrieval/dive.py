@@ -159,7 +159,24 @@ def _rrf_fusion(
 
 # ── Stage 4: Hash deduplication ───────────────────────────────────────────────
 
-def _hash_dedup(results: list[dict], limit: int = 15) -> list[dict]:
+# ── Quality filter ───────────────────────────────────────────────────────────
+
+
+def _is_signal_relevant(signal: dict) -> bool:
+    """
+    Drop signals with no usable content.
+    We do NOT filter by city/country — the RRF ranker + distiller handle relevance.
+    """
+    content = (signal.get("content", "") or "").strip()
+    return len(content) >= 30
+
+
+def _filter_signals_quality(signals: list[dict]) -> list[dict]:
+    """Remove signals with no usable content before distillation."""
+    return [s for s in signals if _is_signal_relevant(s)]
+
+
+def _hash_dedup(results: list[dict], limit: int = 25) -> list[dict]:
     """
     Remove near-duplicate signals using content hash.
     Keeps the highest-ranked representative of each unique signal.
@@ -223,9 +240,10 @@ async def _distill_context(
     Compress top signals into a DistilledMarketContext using llama-3.1-8b-instant.
     """
     # Format signals for the prompt
+    # Pass up to 25 quality-filtered, deduped signals to the distiller
     signals_text = "\n\n".join([
         f"[{i+1}] Source: {s.get('source', 'unknown')} | Type: {s.get('signal_type', 'unknown')}\n{s.get('content', '')}"
-        for i, s in enumerate(signals[:10])
+        for i, s in enumerate(signals[:25])
     ])
 
     messages = [
@@ -258,6 +276,17 @@ Distil into the JSON summary.""",
         # Determine freshness label based on signal age
         freshness = _get_freshness_label(signals)
 
+        # Fetch role-specific weights from DB as fallback, merge with distiller output
+        from backend.market_data import get_role_weights, get_role_category
+        role_cat = get_role_category(role)
+        db_weights = get_role_weights(role_cat) if role_cat else {}
+        if not db_weights:
+            db_weights = {
+                "dsa": 0.7, "projects": 0.7, "cgpa": 0.5,
+                "experience": 0.7, "open_source": 0.4, "college_tier": 0.4
+            }
+        merged_weights = {**db_weights, **(data.get("weight_map") or {})}
+
         return DistilledMarketContext(
             hiring_sentiment=data.get("hiring_sentiment", "neutral"),
             top_required_skills=data.get("top_required_skills", []),
@@ -265,16 +294,21 @@ Distil into the JSON summary.""",
             salary_band=data.get("salary_band", "data unavailable"),
             red_flag_triggers=data.get("red_flag_triggers", []),
             format_expectations=data.get("format_expectations", ""),
-            weight_map=data.get("weight_map", {
-                "dsa": 0.7, "projects": 0.7, "cgpa": 0.5,
-                "experience": 0.7, "open_source": 0.4, "college_tier": 0.4
-            }),
+            weight_map=merged_weights,
             confidence=data.get("confidence", "LOW"),
             freshness_label=freshness,
         )
 
     except Exception as e:
         logger.error("distiller_failed", error=str(e), session_id=session_id)
+        from backend.market_data import get_role_weights, get_role_category
+        role_cat = get_role_category(role)
+        db_weights = get_role_weights(role_cat) if role_cat else {}
+        if not db_weights:
+            db_weights = {
+                "dsa": 0.7, "projects": 0.7, "cgpa": 0.5,
+                "experience": 0.7, "open_source": 0.4, "college_tier": 0.4
+            }
         return DistilledMarketContext(
             hiring_sentiment="neutral",
             top_required_skills=[],
@@ -282,10 +316,7 @@ Distil into the JSON summary.""",
             salary_band="data unavailable",
             red_flag_triggers=[],
             format_expectations="",
-            weight_map={
-                "dsa": 0.7, "projects": 0.7, "cgpa": 0.5,
-                "experience": 0.7, "open_source": 0.4, "college_tier": 0.4
-            },
+            weight_map=db_weights,
             confidence="LOW",
             freshness_label="Needs Refresh",
         )
@@ -348,20 +379,30 @@ def _snapshot_key(role: str, company_type: str, market: str) -> str:
     return f"snapshot:{role}:{company_type}:{market}"
 
 
+def _snapshot_count_key(role: str, company_type: str, market: str) -> str:
+    return f"snapshot_count:{role}:{company_type}:{market}"
+
+
 def _snapshot_prev_key(role: str, company_type: str, market: str) -> str:
     return f"snapshot_prev:{role}:{company_type}:{market}"
 
 
-def _get_cached_snapshot(role: str, company_type: str, market: str) -> DistilledMarketContext | None:
-    """Check Redis for a cached distilled context."""
+def _get_cached_snapshot(role: str, company_type: str, market: str) -> tuple[DistilledMarketContext | None, int]:
+    """
+    Check Redis for a cached distilled context.
+    Returns (context, signal_count) — signal_count is 0 if cache miss.
+    """
     key = _snapshot_key(role, company_type, market)
+    count_key = _snapshot_count_key(role, company_type, market)
     cached = redis.get(key)
     if cached:
         try:
-            return DistilledMarketContext(**json.loads(cached))
+            ctx = DistilledMarketContext(**json.loads(cached))
+            count = redis.get(count_key)
+            return ctx, int(count) if count else 0
         except Exception:
-            return None
-    return None
+            return None, 0
+    return None, 0
 
 
 def _cache_snapshot(
@@ -369,9 +410,11 @@ def _cache_snapshot(
     company_type: str,
     market: str,
     context: DistilledMarketContext,
+    signal_count: int = 0,
 ) -> None:
-    """Store distilled context in Redis. Also promote current to prev."""
+    """Store distilled context and signal count in Redis. Also promote current to prev."""
     key = _snapshot_key(role, company_type, market)
+    count_key = _snapshot_count_key(role, company_type, market)
     prev_key = _snapshot_prev_key(role, company_type, market)
 
     # Promote current to prev before overwriting
@@ -380,6 +423,7 @@ def _cache_snapshot(
         redis.set(prev_key, current, ex=SNAPSHOT_PREV_TTL)
 
     redis.set(key, context.model_dump_json(), ex=SNAPSHOT_TTL)
+    redis.set(count_key, str(signal_count), ex=SNAPSHOT_TTL)
 
 
 # ── Main DIVE function ────────────────────────────────────────────────────────
@@ -400,9 +444,9 @@ async def run_dive(
     5. Return FullMarketContext
     """
     # Step 1 — check Redis snapshot cache
-    cached = _get_cached_snapshot(role, company_type, market)
+    cached, cached_signal_count = _get_cached_snapshot(role, company_type, market)
     if cached:
-        logger.info("dive_cache_hit", role=role, market=market, session_id=session_id)
+        logger.info("dive_cache_hit", role=role, market=market, signal_count=cached_signal_count, session_id=session_id)
         breaking, breaking_available = await _get_breaking_signal_with_fetch(
             role, company_type, market, session_id
         )
@@ -410,7 +454,7 @@ async def run_dive(
             distilled=cached,
             breaking_signal=breaking,
             breaking_available=breaking_available,
-            raw_signal_count=0,
+            raw_signal_count=cached_signal_count,
         )
 
     # Step 2 — check if SQLite has data
@@ -422,7 +466,15 @@ async def run_dive(
             role=role, company_type=company_type, market=market,
             session_id=session_id,
         )
-        # Return baseline fallback
+        # Return baseline fallback — weights from DB, not hardcoded
+        from backend.market_data import get_role_weights, get_role_category
+        role_cat = get_role_category(role)
+        db_weights = get_role_weights(role_cat) if role_cat else {}
+        if not db_weights:
+            db_weights = {
+                "dsa": 0.7, "projects": 0.7, "cgpa": 0.5,
+                "experience": 0.7, "open_source": 0.4, "college_tier": 0.4
+            }
         breaking, breaking_available = await _get_breaking_signal_with_fetch(
             role, company_type, market, session_id
         )
@@ -434,10 +486,7 @@ async def run_dive(
                 salary_band="data unavailable",
                 red_flag_triggers=[],
                 format_expectations="Standard resume format",
-                weight_map={
-                    "dsa": 0.7, "projects": 0.7, "cgpa": 0.5,
-                    "experience": 0.7, "open_source": 0.4, "college_tier": 0.4
-                },
+                weight_map=db_weights,
                 confidence="LOW",
                 freshness_label="Needs Refresh",
             ),
@@ -463,12 +512,18 @@ async def run_dive(
     # Stage 3: RRF fusion
     fused = _rrf_fusion(bm25_results, vector_results)
 
-    # Stage 4: Hash deduplication
-    deduped = _hash_dedup(fused, limit=15)
+    # Stage 4: Hash deduplication (raised limit from 15 to 25)
+    deduped = _hash_dedup(fused, limit=25)
 
-    # Stage 5: Context distiller
+    # Stage 4b: Quality filter — drop signals with no usable content
+    filtered = _filter_signals_quality(deduped)
+    filtered_count = len(filtered)
+    if filtered_count < len(deduped):
+        logger.info("dive_signals_filtered", role=role, market=market, before=len(deduped), after=filtered_count, session_id=session_id)
+
+    # Stage 5: Context distiller (now sees up to 25 filtered signals)
     distilled = await _distill_context(
-        signals=deduped,
+        signals=filtered,
         role=role,
         company_type=company_type,
         market=market,
@@ -476,8 +531,8 @@ async def run_dive(
         session_id=session_id,
     )
 
-    # Cache in Redis
-    _cache_snapshot(role, company_type, market, distilled)
+    # Cache in Redis (store actual total signal count from DB, not just deduped/filtered)
+    _cache_snapshot(role, company_type, market, distilled, signal_count=signal_count)
 
     # Step 4 — add breaking signal (live fetch on cache miss)
     breaking, breaking_available = await _get_breaking_signal_with_fetch(
@@ -487,7 +542,9 @@ async def run_dive(
     logger.info(
         "dive_complete",
         role=role, market=market,
-        signals_retrieved=len(deduped),
+        signals_total=signal_count,
+        signals_deduped=len(deduped),
+        signals_filtered=filtered_count,
         confidence=distilled.confidence,
         session_id=session_id,
     )
@@ -496,44 +553,87 @@ async def run_dive(
         distilled=distilled,
         breaking_signal=breaking,
         breaking_available=breaking_available,
-        raw_signal_count=len(deduped),
+        raw_signal_count=signal_count,
     )
 
 
 # ── Cache warming ─────────────────────────────────────────────────────────────
 
-# Top combos to pre-warm on server startup — covers 80%+ of traffic
-WARMUP_COMBOS = [
-    ("Software Engineer / Associate", "Indian Product Company", "India"),
-    ("Software Engineer / Associate", "Startup", "India"),
-    ("SDE1", "Indian Product Company", "India"),
-    ("SDE1", "FAANG / Big Tech", "India"),
-    ("AI Agentic Engineer", "Startup", "India"),
-    ("AI Agentic Engineer", "FAANG / Big Tech", "India"),
-    ("Data Analyst", "Indian Product Company", "India"),
-    ("Data Scientist", "Startup", "India"),
-    ("SDE2 / Senior SDE", "FAANG / Big Tech", "India"),
-    ("Software Engineer / Associate", "FAANG / Big Tech", "USA"),
-]
+_WARMUP_COMBOS: list[tuple[str, str, str]] = []
+
+
+def _get_warmup_combos() -> list[tuple[str, str, str]]:
+    """
+    Generate warmup combos dynamically from DB signal counts.
+    Falls back to a minimal hardcoded list only if DB is empty.
+    """
+    global _WARMUP_COMBOS
+    if _WARMUP_COMBOS:
+        return _WARMUP_COMBOS
+
+    try:
+        import sqlite3
+        conn = sqlite3.connect("ingestion/market_intel.db")
+        cur = conn.cursor()
+        # Top 15 combos by signal count
+        cur.execute(
+            "SELECT role, company_type, market, COUNT(*) as cnt "
+            "FROM market_signals GROUP BY role, company_type, market "
+            "ORDER BY cnt DESC LIMIT 15"
+        )
+        combos = [(r, c, m) for r, c, m, _ in cur.fetchall()]
+        conn.close()
+        if combos:
+            _WARMUP_COMBOS = combos
+            return _WARMUP_COMBOS
+    except Exception:
+        pass
+
+    # Fallback only if DB is unreachable or empty
+    _WARMUP_COMBOS = [
+        ("Software Engineer / Associate", "Indian Product Company", "India"),
+        ("SDE1", "Indian Product Company", "India"),
+        ("AI Agentic Engineer", "Indian Product Company", "India"),
+    ]
+    return _WARMUP_COMBOS
 
 
 async def warmup_cache(experience_level: str = "Student / Fresher") -> dict:
     """
     Pre-warm DIVE cache for top combos on server startup.
+    Clears stale cache entries (older than 1 day) before warming so that
+    pipeline improvements are picked up on restart.
     Returns dict of {combo: status} — "hit" if cached, "warmed" if fetched, "skipped" if no data.
     """
+    import time
     results = {}
-    for role, company_type, market in WARMUP_COMBOS:
+    now = int(time.time())
+
+    for role, company_type, market in _get_warmup_combos():
         combo_key = f"{role}:{company_type}:{market}"
-        # Skip if already cached
-        if _get_cached_snapshot(role, company_type, market):
+        key = _snapshot_key(role, company_type, market)
+
+        # Check if cached and fresh (< 24h old since creation)
+        cached_ctx, cached_count = _get_cached_snapshot(role, company_type, market)
+        ttl = redis.ttl(key)
+        stale = (ttl is not None and ttl > 0 and ttl < (SNAPSHOT_TTL - 24 * 3600))
+
+        if cached_ctx and not stale:
             results[combo_key] = "hit"
             continue
+
+        # Clear stale entry so fresh distillation runs
+        if stale:
+            redis.delete(key)
+            redis.delete(_snapshot_count_key(role, company_type, market))
+            logger.info("cache_stale_cleared", combo=combo_key, ttl=ttl)
+
         # Skip if no signals in SQLite
         from ingestion.search import count_signals_for_combo
         if count_signals_for_combo(role, company_type, market) == 0:
             results[combo_key] = "skipped"
             continue
+
         # Run DIVE to populate cache
         try:
             await run_dive(role, company_type, market, experience_level)
