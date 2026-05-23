@@ -18,7 +18,9 @@ frontend/dist/
 
 # Database — intentionally tracked, contains pre-populated market signals (no secrets)
 # ingestion/market_intel.db
-
+image.png
+.codex
+sample.pdf
 # Misc
 *.zip
 *.md5
@@ -26,7 +28,7 @@ roast_chat.txt
 roastv2.txt
 q-dev-chat-*.md
 ROAST_COMPLETE_DEVELOPER_RUNBOOK.md
-
+ROAST_COMPLETE_DEVELOPER_RUNBOOK.md
 # Docker
 .dockerignore
 # Dockerfile
