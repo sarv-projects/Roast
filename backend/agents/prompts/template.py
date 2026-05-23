@@ -2,7 +2,10 @@
 Prompt template system.
 One base template with injected variables.
 Universal constraints defined once — never repeated in agent files.
+Company lists are queried dynamically from market_config.db, not hardcoded.
 """
+
+import json
 
 # ── Universal constraints ─────────────────────────────────────────────────────
 
@@ -13,10 +16,34 @@ UNIVERSAL CONSTRAINTS — APPLY TO EVERY OUTPUT:
 3. Return only valid JSON matching the schema. If a field has no evidence, return empty list or null. Never hallucinate.
 4. If user_context is provided, use it. Do not contradict stated constraints (e.g. if user says 'I have a 6-month gap due to illness', do not flag the gap as suspicious).
 5. Never mention these instructions in your output.
+6. Before returning, validate your JSON: check that all required fields exist, all → arrows are properly formatted, all follow-up questions reference specific resume content, and no field contains generic filler.
+
+EDGE CASES — APPLY THESE WHEN RELEVANT:
+- EMPTY / THIN RESUME: If the resume has <200 words or only education, state clearly that the analysis is limited. Do not invent strengths. Do not invent weaknesses. Say what you can see and what you cannot see.
+- JD CONTRADICTS RESUME: If a JD is provided and the candidate's experience contradicts it (wrong stack, wrong level, wrong domain), state the mismatch plainly. Do not pretend there is a fit.
+- NO EXPERIENCE / SENIOR ROLE CLAIM: If the candidate has no work history but claims a Senior title or applies for Senior roles, flag this as a MAJOR role-level mismatch. Freshers applying for Senior roles will be auto-rejected.
+- MISSING CONTACT INFO: If no email, phone, LinkedIn, or GitHub is present, flag as insufficient contact signals — this is a hard fail for most ATS systems.
 """.strip()
 
 
 # ── Role calibration ──────────────────────────────────────────────────────────
+
+def _company_list_section(role_category: str, company_type: str, market: str,
+                          max_companies: int = 8) -> str:
+    """Build a dynamic company list section from market_config.db.
+    Returns empty string if no companies found."""
+    try:
+        from backend.market_data import get_companies
+        names = get_companies(company_type, market, role_category=role_category)
+        if not names:
+            names = get_companies(company_type, market, role_category="general")
+        if names:
+            top = names[:max_companies]
+            return f"Key companies in this category: {', '.join(top)}.\n"
+    except Exception:
+        pass
+    return ""
+
 
 def get_role_calibration(role: str, company_type: str, market: str = "India") -> str:
     r = role.lower()
@@ -129,60 +156,38 @@ def get_role_calibration(role: str, company_type: str, market: str = "India") ->
             )
 
     # ── AI/ML roles ───────────────────────────────────────────────────────────
-    elif any(x in r for x in ['ai engineer', 'ai/ml', 'ml engineer']):
-        if 'ml engineer' in r or 'ai/ml' in r:
-            return (
-                "ROLE CONTEXT — AI/ML Engineer (model-focused):\n"
-                "Cities: Bangalore (Google Brain, Microsoft Research, Amazon AI, Sarvam, Krutrim, "
-                "Flipkart AI, Swiggy AI), Hyderabad (Microsoft AI, Amazon AI, Google AI), "
-                "Mumbai (Tata AI, Jio AI, fintech AI), Delhi NCR (Paytm AI, InMobi, edtech AI).\n"
-                "Companies — AI-first: Sarvam AI, Krutrim, Gnani.ai, Haptik, Yellow.ai, "
-                "Observe.AI, Uniphore, Vernacular.ai, Slang Labs, Mad Street Den (Vue.ai), "
-                "Niramai, Qure.ai, SigTuple, Tricog, Arya.ai, Staqu, Uncanny Vision, "
-                "Detect Technologies, Entropik Tech, Mihup, Senseforth, Floatbot, "
-                "Niki.ai, Wysa, Wysa, iMerit, Shaip, Appen India.\n"
-                "Companies — product with strong ML: Flipkart, Swiggy, Zomato, Razorpay, "
-                "PhonePe, CRED, Meesho, Navi, Groww, Ola, Freshworks, Zoho, BrowserStack.\n"
-                "Companies — FAANG/MNC AI: Google DeepMind India, Microsoft Research India, "
-                "Amazon Science, Meta AI, Adobe Sensei, Salesforce Einstein, IBM Research India.\n"
-                "Expected stack: Python, PyTorch/TensorFlow, scikit-learn, LangChain/LlamaIndex, "
-                "FastAPI, vector DBs, LLM APIs, experiment tracking (MLflow/W&B optional).\n"
-                "Production: models or LLM pipelines serving real users, RAG systems, agents.\n"
-                "Key signals: model training/fine-tuning with eval metrics, RAG pipelines, "
-                "multi-agent systems, LLM observability, rate-limit handling.\n"
-                "Interview bar: ML fundamentals, system design for AI, coding, past project depth.\n"
-                "Salary fresher: ₹10-20 LPA (startups), ₹18-35 LPA (top product companies).\n"
-                "DO NOT penalise: absence of GPU clusters — free-tier production shows resourcefulness.\n"
-                "A fresher with a shipped LLM product serving real users is rare and should be rated highly."
-            )
-        else:
-            return (
-                "ROLE CONTEXT — AI Engineer (product/systems focused, NOT model training):\n"
-                "Cities: Bangalore (Sarvam, Krutrim, Ola AI, Flipkart AI, Google, Amazon, Microsoft), "
-                "Hyderabad (Microsoft AI, Amazon AI, Google AI), "
-                "Mumbai (Tata AI, Jio AI, fintech AI teams), "
-                "Delhi NCR (Paytm AI, InMobi, edtech AI teams).\n"
-                "Companies — AI-first: Sarvam AI, Krutrim, Gnani.ai, Haptik, Yellow.ai, "
-                "Observe.AI, Uniphore, Vernacular.ai, Slang Labs, Arya.ai, Staqu, "
-                "Detect Technologies, Entropik Tech, Mihup, Senseforth, Floatbot, "
-                "Niki.ai, Wysa, Ozonetel, Exotel, Kaleyra, Route Mobile.\n"
-                "Companies — product with AI Engineer roles: Flipkart, Swiggy, Zomato, "
-                "Razorpay, PhonePe, CRED, Meesho, Zepto, Navi, Groww, Slice, Ola, "
-                "Freshworks, Zoho, BrowserStack, Postman, Chargebee, Juspay, Cashfree.\n"
-                "Companies — FAANG/MNC: Google, Amazon, Microsoft, Adobe, Salesforce, IBM.\n"
-                "Expected stack: Python, LangChain/LlamaIndex, FastAPI, vector DBs, "
-                "LLM APIs (OpenAI/Groq/Gemini), RAG pipelines, asyncio, Redis, WebSockets.\n"
-                "Production: LLM pipelines serving real users, RAG systems with real data, "
-                "agents handling real tasks — NOT Colab notebooks or Hugging Face Space demos.\n"
-                "Key signals: multi-agent systems, hybrid retrieval (BM25+vector+RRF), LLM observability, "
-                "rate-limit handling, multi-provider fallback, real-time streaming, cost-aware engineering.\n"
-                "Interview bar: LLM system design, RAG architecture, coding, past project depth.\n"
-                "Salary fresher: ₹12-24 LPA (startups), ₹20-40 LPA (top AI-first companies).\n"
-                "DO NOT penalise: absence of GPU clusters, cloud-scale infra, or ML fine-tuning — "
-                "most startup AI Engineer roles use API-based LLMs, not fine-tuned models.\n"
-                "DO NOT require: PyTorch, MLflow, W&B, or model training experience.\n"
-                "A fresher with a shipped LLM product serving real users is rare and should be rated highly."
-            )
+    elif any(x in r for x in ['ai engineer', 'ai/ml', 'ml engineer', 'ai agentic', 'genai']):
+        return (
+            "ROLE CONTEXT — AI Agentic Engineer (covers AI Engineering, ML Engineering, GenAI, Prompt Engineering):\n"
+            "Cities: Bangalore (Sarvam, Google, Amazon, Microsoft, Flipkart AI, Swiggy AI, "
+            "Gnani.ai, Haptik, Yellow.ai, Observe.AI, Uniphore), "
+            "Hyderabad (Microsoft AI, Amazon AI, Google AI), "
+            "Mumbai (Tata AI, Jio AI, fintech AI teams), "
+            "Delhi NCR (Paytm AI, InMobi, edtech AI teams).\n"
+            "Companies — AI-first: Sarvam AI, Gnani.ai, Haptik, Yellow.ai, "
+            "Observe.AI, Uniphore, Vernacular.ai, Slang Labs, Niki.ai, Wysa, "
+            "Detect Technologies, Entropik Tech, Mihup, Senseforth, Floatbot.\n"
+            "Companies — product with AI teams: Flipkart, Swiggy, Zomato, "
+            "Razorpay, PhonePe, CRED, Meesho, Zepto, Navi, Groww, Slice, Ola, "
+            "Freshworks, Zoho, BrowserStack, Postman, Chargebee, Juspay, Cashfree.\n"
+            "Companies — FAANG/MNC: Google, Amazon, Microsoft, Adobe, Salesforce, IBM, "
+            "Uber, LinkedIn, Atlassian, Stripe, Databricks, Snowflake.\n"
+            "Expected stack: Python, LangChain/LlamaIndex/CrewAI, FastAPI, vector DBs "
+            "(Qdrant/ChromaDB/Pinecone/Weaviate), LLM APIs (OpenAI/Groq/Gemini/Anthropic), "
+            "RAG pipelines, asyncio, Redis, WebSockets, rate-limit handling.\n"
+            "Production: LLM pipelines serving real users, RAG systems with real data, "
+            "agents handling real tasks, multi-agent orchestration, LLM observability.\n"
+            "Optional valued skills: fine-tuning (QLoRA/LoRA), prompt engineering, "
+            "model evaluation, multi-modal systems, voice AI, Langfuse, LangGraph, Autogen.\n"
+            "Key signals: multi-agent systems, hybrid retrieval (BM25+vector+RRF), "
+            "LLM observability, rate-limit handling, multi-provider fallback, "
+            "real-time streaming, cost-aware engineering.\n"
+            "Interview bar: LLM system design, RAG architecture, coding, past project depth.\n"
+            "Salary fresher: ₹8-22 LPA (startups), ₹15-35 LPA (top AI-first/FAANG companies).\n"
+            "DO NOT penalise: absence of GPU clusters, cloud-scale infra, or heavy ML training.\n"
+            "A fresher with a shipped LLM product serving real users is rare — rate highly.\n"
+            "A fresher with only Colab notebooks and Hugging Face demos is baseline — rate accordingly."
+        )
 
     # ── Data Science ──────────────────────────────────────────────────────────
     elif 'data scientist' in r:
@@ -339,6 +344,39 @@ def get_role_calibration(role: str, company_type: str, market: str = "India") ->
             "DO NOT require: any software engineering, ML, or web development experience."
         )
 
+    # ── Platform Engineer ──────────────────────────────────────────────────────
+    elif 'platform' in r:
+        return (
+            "ROLE CONTEXT — Platform Engineer (Internal Developer Platform / Infrastructure):\n"
+            "Cities: Bangalore (primary hub for platform engineering — FAANG + top product companies), "
+            "Hyderabad (FAANG/MNC platform teams), "
+            "Mumbai (BFSI platform teams), "
+            "Pune (MNC platform teams).\n"
+            "Companies — product with platform teams: Flipkart, Swiggy, Razorpay, PhonePe, "
+            "CRED, Meesho, Zepto, Navi, Groww, BrowserStack, Freshworks, Zoho, Postman, Hasura.\n"
+            "Companies — FAANG/MNC: Google, Amazon (AWS), Microsoft (Azure), Meta, "
+            "Apple, Salesforce, Uber, Atlassian, Intuit, Cisco, Oracle, SAP Labs.\n"
+            "Companies — BFSI/enterprise: JPMorgan, Goldman Sachs, Deutsche Bank, "
+            "Barclays, HSBC, American Express, Visa, Mastercard, Walmart Global Tech.\n"
+            "Expected stack: Go/Python, Kubernetes, Docker, Terraform/Pulumi/Crossplane, "
+            "CI/CD (GitHub Actions/GitLab CI/ArgoCD), cloud (AWS/GCP/Azure), "
+            "monitoring (Prometheus/Grafana), service mesh (Istio/Linkerd), "
+            "Backstage or similar developer portal, API gateway design.\n"
+            "Production: internal developer platforms serving 20+ engineering teams, "
+            "self-service infrastructure provisioning, developer experience tooling, "
+            "platform reliability >99.9% uptime, SLO/SLI frameworks.\n"
+            "Key signals: IaC at org scale, developer workflow optimisation, "
+            "GitOps practices, platform observability, security compliance integration, "
+            "cost optimisation dashboards, provisioning time reduction measured.\n"
+            "Interview bar: Kubernetes internals, distributed systems, networking, "
+            "Linux internals, system design for platforms, scripting.\n"
+            "Salary fresher: Platform Engineer is typically mid-level+ (4+ YOE). "
+            "Mid-level: ₹18-40 LPA at product companies, ₹25-55 LPA at FAANG.\n"
+            "DO NOT penalise: absence of ML/AI — completely irrelevant.\n"
+            "DO NOT penalise: less DSA focus — platform roles are systems-heavy, not algorithm-heavy.\n"
+            "Key differentiator: measured impact on developer productivity (DORA metrics, lead time, deploy frequency)."
+        )
+
     # ── DevOps / SRE ──────────────────────────────────────────────────────────
     elif any(x in r for x in ['devops', 'sre']):
         return (
@@ -428,95 +466,142 @@ def get_role_calibration(role: str, company_type: str, market: str = "India") ->
 # ── Non-India role calibrations ───────────────────────────────────────────────
 
 def _get_usa_role_calibration(r: str) -> str:
+    # ── Software Engineering ──────────────────────────────────────────────────
     if any(x in r for x in ['sde', 'software engineer', 'associate', 'full stack', 'backend']):
-        return (
-            "ROLE CONTEXT — Software Engineer in USA:\n"
-            "Cities: San Francisco Bay Area (Google, Meta, Apple, Stripe, Airbnb, Lyft, Dropbox, "
-            "Salesforce, Twilio, Databricks, Snowflake, Confluent, HashiCorp, Figma, Notion), "
-            "Seattle (Amazon, Microsoft, Expedia, Zillow, Redfin, Tableau, Smartsheet), "
-            "New York (Goldman Sachs, JPMorgan, Bloomberg, Two Sigma, Citadel, Spotify, "
-            "Etsy, Squarespace, MongoDB, Datadog, Cloudflare), "
-            "Austin (Tesla, Dell, Oracle, Indeed, HomeAway/Vrbo, Bumble, Keller Williams), "
-            "Boston (HubSpot, Wayfair, DraftKings, Rapid7, Carbon Black), "
-            "Los Angeles (SpaceX, Snap, Hulu, Riot Games, Activision Blizzard).\n"
-            "Top companies by tier: FAANG+ (Google/Meta/Apple/Amazon/Microsoft/Netflix/Nvidia) — "
-            "₹80-160L TC fresher. Tier-2 (Stripe/Airbnb/Lyft/Databricks/Snowflake) — "
-            "₹60-100L TC. Tier-3 (mid-size product) — ₹40-70L TC.\n"
-            "Expected stack: any language, strong DSA, system design, distributed systems.\n"
-            "Interview bar: LeetCode medium-hard (4-6 rounds), system design (HLD+LLD), behavioural.\n"
-            "Resume: 1 page, no photo, no DOB, quantified achievements, GitHub link.\n"
-            "Visa: H1B sponsorship required for non-citizens. OPT/CPT for F1 students (3 years).\n"
-            "DO NOT apply India-specific norms. CGPA matters less than projects and internships."
-        )
-    if any(x in r for x in ['ai engineer', 'ai/ml', 'ml engineer']):
-        return (
-            "ROLE CONTEXT — AI/ML Engineer in USA:\n"
-            "Cities: San Francisco Bay Area (OpenAI, Anthropic, Google DeepMind, Meta AI, "
-            "Cohere, Mistral, Scale AI, Hugging Face, Weights & Biases, LangChain, "
-            "Databricks, Snowflake, Pinecone, Weaviate, Chroma), "
-            "Seattle (Amazon AI/Alexa, Microsoft Azure AI, Allen Institute for AI), "
-            "New York (Bloomberg AI, Two Sigma, Citadel AI, Spotify AI).\n"
-            "Top companies: OpenAI, Anthropic, Google DeepMind, Meta AI, Microsoft AI, "
-            "Amazon Science, Apple ML, Nvidia, Databricks, Scale AI, Cohere, "
-            "Hugging Face, Weights & Biases, LangChain, Pinecone, Weaviate.\n"
-            "Salary: AI Engineer $130-200K TC at top AI labs, $100-160K at product companies.\n"
-            "Expected stack: Python, PyTorch/JAX, LangChain/LlamaIndex, vector DBs, "
-            "LLM APIs, RAG pipelines, MLflow/W&B, distributed training (optional).\n"
-            "Interview bar: ML fundamentals, system design for AI, coding, research depth.\n"
-            "DO NOT apply India-specific norms."
-        )
+        if 'faang' in r or 'big tech' in r:
+            return (
+                "ROLE CONTEXT — SDE at FAANG/Big Tech USA:\n"
+                "Cities: San Francisco Bay Area, Seattle, New York, Austin, Boston.\n"
+                "Companies: Google, Meta, Apple, Amazon, Microsoft, Netflix, Nvidia, "
+                "Stripe, Airbnb, Lyft, Databricks, Snowflake, Confluent, HashiCorp, Uber, LinkedIn.\n"
+                "Expected stack: any language, strong DSA, system design, distributed systems.\n"
+                "Interview bar: LeetCode medium-hard (4-6 rounds), system design (HLD+LLD), behavioural (STAR).\n"
+                "Salary fresher: $100-160K TC. Equity (RSUs) is 30-50% of total comp at public companies.\n"
+                "Resume: 1 page, no photo, no DOB, quantified achievements, GitHub link.\n"
+                "Visa: H1B lottery for non-citizens. OPT/CPT for F1 students (3 years STEM extension).\n"
+                "DO NOT apply India-specific norms. CGPA matters less than projects and internships.\n"
+                "DO NOT penalise: absence of ML/AI unless role is explicitly ML-focused."
+            )
+        elif 'startup' in r:
+            return (
+                "ROLE CONTEXT — SDE at US Startup:\n"
+                "Cities: San Francisco (SoMa, Mission), New York (Flatiron, Williamsburg), "
+                "Austin, Seattle, Boulder, Los Angeles (Silicon Beach).\n"
+                "Companies: early-stage (<50 people) to growth-stage (Series B-D).\n"
+                "Expected stack: full-stack capability, rapid prototyping, DevOps awareness.\n"
+                "Interview bar: take-home project or pair coding, system design, culture fit. Less LeetCode than FAANG.\n"
+                "Salary: $70-120K base + 0.1-0.5% equity (pre-IPO). Later stage pays more base, less equity.\n"
+                "Key signals: shipping velocity, ownership, generalist capability, prior startup experience.\n"
+                "DO NOT penalise: college tier, CGPA — irrelevant at startups."
+            )
+        else:
+            return (
+                "ROLE CONTEXT — SDE at US Product Company / MNC:\n"
+                "Companies: banks (Goldman, JPMorgan), enterprises (IBM, Oracle, SAP), "
+                "mid-tier product (Salesforce, Adobe, Workday, Intuit, Splunk).\n"
+                "Interview bar: moderate LeetCode, system design for senior+.\n"
+                "Salary: $80-130K TC for mid-tier product. BFSI $90-150K TC.\n"
+                "DO NOT penalise: absence of ML/AI unless role is explicitly ML-focused."
+            )
+    # ── AI / ML ───────────────────────────────────────────────────────────────
+    if any(x in r for x in ['ai engineer', 'ai/ml', 'ml engineer', 'ai agentic']):
+        if 'faang' in r or 'big tech' in r:
+            return (
+                "ROLE CONTEXT — AI/ML Engineer at FAANG/Big Tech USA:\n"
+                "Cities: San Francisco Bay Area, Seattle, New York, Boston, Austin.\n"
+                "Companies: OpenAI, Anthropic, Google DeepMind, Meta AI, Microsoft AI, "
+                "Amazon Science, Apple ML, Nvidia, Databricks, Scale AI, Cohere.\n"
+                "Expected stack: Python, PyTorch/JAX, CUDA, LangChain/LlamaIndex, vector DBs.\n"
+                "Interview bar: ML fundamentals, system design for AI, coding, research depth.\n"
+                "Salary fresher: $120-180K TC at top AI labs, $100-150K at FAANG.\n"
+                "Key signals: published research, open-source AI contributions, shipped ML products.\n"
+                "DO NOT penalise: absence of traditional DSA — AI roles weight ML depth higher."
+            )
+        elif 'startup' in r:
+            return (
+                "ROLE CONTEXT — AI/ML Engineer at US AI Startup:\n"
+                "Companies: early-stage foundation model companies, vertical AI startups, AI infra.\n"
+                "Expected: end-to-end ML pipeline, prompt engineering, RAG, model evaluation.\n"
+                "Interview bar: practical ML project depth, system design for AI, coding.\n"
+                "Salary: $90-150K base + 0.2-0.5% equity. More equity upside at earlier stage.\n"
+                "Key signals: shipped AI products, fine-tuning experience, multi-agent systems."
+            )
+        else:
+            return (
+                "ROLE CONTEXT — AI/ML Engineer at US Product/MNC:\n"
+                "Companies: banks building AI teams, enterprises adopting AI, mid-tier product.\n"
+                "Expected: applied ML, MLOps, production deployments, business impact metrics.\n"
+                "Salary: $100-160K TC depending on YOE and specialisation."
+            )
+    # ── Data roles ────────────────────────────────────────────────────────────
     if 'data' in r:
         return (
             "ROLE CONTEXT — Data role in USA:\n"
             "Cities: San Francisco Bay Area, Seattle, New York, Boston, Austin.\n"
-            "Top companies: Google, Meta, Amazon, Microsoft, Netflix, Airbnb, Lyft, "
-            "Stripe, Databricks, Snowflake, Palantir, Tableau, Looker, dbt Labs.\n"
-            "Salary: Data Scientist $100-160K TC, Data Engineer $110-170K TC.\n"
+            "Companies: FAANG, mid-tier product, BFSI, consulting.\n"
             "Expected: Python, SQL, Spark, Airflow, cloud data warehouses, statistics.\n"
-            "Interview bar: SQL, statistics, ML theory, case studies, system design.\n"
-            "DO NOT apply India-specific norms."
+            "Interview bar: SQL, statistics, ML theory, case studies, system design for Data Eng.\n"
+            "Salary: Data Scientist $100-160K TC, Data Engineer $110-170K TC.\n"
+            "DO NOT apply India-specific norms. Portfolio projects and Kaggle matter less — shipped work matters more."
         )
+    # ── Hardware / VLSI / Embedded ────────────────────────────────────────────
     if 'embedded' in r or 'vlsi' in r or 'design engineer' in r:
         return (
             "ROLE CONTEXT — Hardware/Embedded/VLSI Engineer in USA:\n"
-            "Cities: San Jose/Silicon Valley (Intel, Nvidia, AMD, Qualcomm, Broadcom, "
-            "Apple Silicon, Google TPU, Tesla FSD, Marvell, Synopsys, Cadence), "
-            "San Diego (Qualcomm HQ), Austin (Tesla, Samsung Austin, NXP), "
-            "Boston (Analog Devices, Raytheon, BAE Systems), "
-            "Seattle (Microsoft hardware, Amazon Annapurna Labs).\n"
-            "Top companies: Intel, Nvidia, AMD, Qualcomm, Broadcom, Apple, Google, "
-            "Tesla, Amazon (Annapurna), Microsoft, Marvell, NXP, TI, Analog Devices, "
-            "Synopsys, Cadence, Arm, TSMC Design Centers.\n"
-            "Salary: VLSI/Embedded fresher $100-150K TC at top companies.\n"
-            "DO NOT apply India-specific norms."
+            "Cities: San Jose/Silicon Valley, San Diego, Austin, Boston, Seattle.\n"
+            "Companies: Intel, Nvidia, AMD, Qualcomm, Broadcom, Apple Silicon, "
+            "Google TPU, Tesla FSD, Amazon Annapurna, Synopsys, Cadence, Arm.\n"
+            "Expected: RTL design (Verilog/VHDL), verification (UVM), physical design, "
+            "firmware (C/C++), RTOS, hardware protocols (CAN, SPI, I2C).\n"
+            "Salary: $100-150K TC at top companies. PhDs earn $130-170K fresh.\n"
+            "Key signals: tape-out experience, silicon-proven designs, patent portfolio.\n"
+            "DO NOT penalise: absence of GitHub — hardware repos are proprietary.\n"
+            "DO NOT expect: full-stack, cloud, ML unless explicitly listed."
         )
     return (
         f"ROLE CONTEXT — {r.title()} in USA:\n"
-        "Apply US tech industry norms. Strong DSA, system design, and past project depth.\n"
-        "Resume: 1 page, no photo, quantified achievements. Visa sponsorship may be required.\n"
+        "Apply US tech industry norms. 1-page resume, no photo, quantified achievements.\n"
+        "Visa sponsorship may be required. DSA and system design weighted by role.\n"
         "DO NOT apply India-specific norms."
     )
 
 
 def _get_uae_role_calibration(r: str) -> str:
-    if any(x in r for x in ['sde', 'software engineer', 'associate', 'full stack', 'backend', 'ai', 'ml', 'data']):
+    # ── SDE ───────────────────────────────────────────────────────────────────
+    if any(x in r for x in ['sde', 'software engineer', 'associate', 'full stack', 'backend']):
         return (
-            "ROLE CONTEXT — Tech role in UAE:\n"
-            "Cities: Dubai (primary tech hub — DIFC, Dubai Internet City, Dubai Silicon Oasis), "
-            "Abu Dhabi (G42, ADNOC, government tech, Masdar City).\n"
-            "Top companies — tech/startup: Careem (Uber), Noon, Talabat, Fetchr, "
-            "Souq/Amazon.ae, Dubizzle, Property Finder, Bayut, Bayt.com, "
-            "Yalla Group, Anghami, Sarwa, Baraka, StashAway UAE.\n"
-            "Top companies — government/enterprise: G42 (AI/Abu Dhabi), ADNOC, "
-            "Emirates Group, Etisalat/e&, du, RTA, DEWA, Mubadala, ADQ.\n"
-            "Top companies — FAANG/MNC: Amazon, Microsoft, Google, Oracle, SAP, "
-            "IBM, Accenture, Deloitte, PwC, KPMG, EY.\n"
-            "Top companies — BFSI: Emirates NBD, FAB, ADCB, Mashreq, ENBD, "
-            "HSBC UAE, Citibank UAE, Standard Chartered UAE.\n"
+            "ROLE CONTEXT — Software Engineer in UAE:\n"
+            "Cities: Dubai (DIFC, Dubai Internet City, Dubai Silicon Oasis), "
+            "Abu Dhabi (G42 AI hub, ADNOC tech, Masdar City).\n"
+            "Companies — tech/startup: Careem (Uber), Noon, Talabat, Dubizzle, Property Finder.\n"
+            "Companies — government/enterprise: G42 (AI/Abu Dhabi), Emirates Group, Etisalat/e&.\n"
+            "Companies — FAANG/MNC: Amazon, Microsoft, Google, Oracle, SAP, IBM, Accenture.\n"
+            "Expected stack: Java/.NET/Python, SQL, cloud (AWS/Azure), full-stack common.\n"
+            "Interview bar: moderate DSA + system design. Less LeetCode-heavy than USA.\n"
             "Salary: AED 8,000-20,000/month tax-free (₹18-46 LPA equivalent).\n"
-            "Resume: 1-2 pages, photo optional, no salary history.\n"
-            "Culture: English primary, multicultural, Arabic a bonus.\n"
+            "Visa: employer-sponsored work visa standard. Notice period 30-60 days.\n"
+            "Culture: English primary, multicultural. Arabic bonus not required.\n"
             "DO NOT apply India-specific service company norms."
+        )
+    # ── AI / ML ───────────────────────────────────────────────────────────────
+    if any(x in r for x in ['ai engineer', 'ai/ml', 'ml engineer', 'ai agentic']):
+        return (
+            "ROLE CONTEXT — AI/ML Engineer in UAE:\n"
+            "Primary hub: Abu Dhabi (G42 — largest AI company in Middle East) and Dubai.\n"
+            "Companies: G42 (AI/ML/Cloud), Presight AI, Bayanat, Hub71 startups.\n"
+            "Expected: Python, ML frameworks, NLP, computer vision, Arabic NLP a plus.\n"
+            "Salary: AED 12,000-25,000/month tax-free. Senior roles AED 25,000-40,000.\n"
+            "Key signals: shipped AI products, publications, bilingual (Arabic+English) valued.\n"
+            "DO NOT apply India-specific norms."
+        )
+    # ── Data ──────────────────────────────────────────────────────────────────
+    if 'data' in r:
+        return (
+            "ROLE CONTEXT — Data role in UAE:\n"
+            "Companies: G42, ADNOC, Emirates Group, banks (ENBD, FAB, ADCB), Amazon, Noon.\n"
+            "Expected: SQL, Python, Tableau/Power BI, cloud analytics.\n"
+            "Salary: AED 10,000-20,000/month. Senior data roles AED 20,000-35,000.\n"
+            "DO NOT apply India-specific norms."
         )
     return (
         f"ROLE CONTEXT — {r.title()} in UAE:\n"
@@ -527,23 +612,39 @@ def _get_uae_role_calibration(r: str) -> str:
 
 
 def _get_singapore_role_calibration(r: str) -> str:
-    if any(x in r for x in ['sde', 'software engineer', 'associate', 'full stack', 'backend', 'ai', 'ml', 'data']):
+    # ── SDE ───────────────────────────────────────────────────────────────────
+    if any(x in r for x in ['sde', 'software engineer', 'associate', 'full stack', 'backend']):
         return (
-            "ROLE CONTEXT — Tech role in Singapore:\n"
-            "Singapore is a single city-state — all jobs concentrated here "
-            "(one-north, CBD, Jurong Innovation District, Changi Business Park).\n"
-            "Top companies — regional HQs: Sea Group (Shopee/Garena/SeaMoney), Grab, "
-            "Lazada, Gojek, Razer, Carousell, PropertyGuru, 99.co, Ninja Van, "
-            "Carro, Circles.Life, Funding Societies, Validus, Aspire, Nium.\n"
-            "Top companies — FAANG/global: Google APAC, Meta APAC, Amazon, Microsoft, "
-            "Apple, Stripe, Twilio, Salesforce, Workday, ServiceNow, Zendesk.\n"
-            "Top companies — BFSI: DBS, OCBC, UOB, Standard Chartered, HSBC, Citibank, "
-            "JPMorgan, Goldman Sachs, Morgan Stanley, Deutsche Bank, Barclays.\n"
-            "Top companies — consulting/MNC: Accenture, Capgemini, IBM, Deloitte, EY, KPMG.\n"
+            "ROLE CONTEXT — Software Engineer in Singapore:\n"
+            "Singapore is a single city-state. Job hubs: one-north, CBD, Jurong Innovation District.\n"
+            "Companies — regional HQs: Sea Group (Shopee/Garena), Grab, Lazada, Gojek, Razer.\n"
+            "Companies — FAANG/global: Google APAC, Meta APAC, Amazon, Microsoft, Stripe, Twilio.\n"
+            "Companies — BFSI: DBS, OCBC, UOB, Standard Chartered, HSBC, Goldman Sachs.\n"
+            "Companies — consulting/MNC: Accenture, Capgemini, IBM, Deloitte, EY.\n"
+            "Expected stack: Java/Python/Go, cloud (AWS/Azure), distributed systems.\n"
+            "Interview bar: similar to US FAANG for tech cos — DSA + system design.\n"
             "Salary: SGD 4,500-10,000/month (₹28-63 LPA equivalent). EP requires SGD 5,000+.\n"
-            "Resume: 1-2 pages, no photo, no DOB. Clean formatting.\n"
-            "Interview bar: similar to US FAANG for tech companies — DSA + system design.\n"
+            "Visa: Employment Pass (EP) — minimum SGD 5,000/month salary for professionals.\n"
             "DO NOT apply India-specific service company norms."
+        )
+    # ── AI / ML ───────────────────────────────────────────────────────────────
+    if any(x in r for x in ['ai engineer', 'ai/ml', 'ml engineer', 'ai agentic']):
+        return (
+            "ROLE CONTEXT — AI/ML Engineer in Singapore:\n"
+            "Companies: Sea Group AI Labs, Grab AI, GovTech Singapore, DBS AI/ML teams, A*STAR.\n"
+            "Expected: Python, ML frameworks, NLP, computer vision, LLM/RAG pipelines.\n"
+            "Salary: SGD 6,000-12,000/month. FAANG AI SGD 10,000-18,000/month.\n"
+            "Key signals: research publications, shipped AI systems, multilingual (English+Mandarin bonus).\n"
+            "DO NOT apply India-specific norms."
+        )
+    # ── Data ──────────────────────────────────────────────────────────────────
+    if 'data' in r:
+        return (
+            "ROLE CONTEXT — Data role in Singapore:\n"
+            "Companies: Shopee Data, Grab Data, DBS Analytics, GovTech, banks.\n"
+            "Expected: SQL, Python, Spark, Tableau/Power BI, cloud analytics.\n"
+            "Salary: SGD 4,500-9,000/month. Senior SGD 8,000-15,000.\n"
+            "DO NOT apply India-specific norms."
         )
     return (
         f"ROLE CONTEXT — {r.title()} in Singapore:\n"
@@ -554,29 +655,42 @@ def _get_singapore_role_calibration(r: str) -> str:
 
 
 def _get_uk_role_calibration(r: str) -> str:
-    if any(x in r for x in ['sde', 'software engineer', 'associate', 'full stack', 'backend', 'ai', 'ml', 'data']):
+    # ── SDE ───────────────────────────────────────────────────────────────────
+    if any(x in r for x in ['sde', 'software engineer', 'associate', 'full stack', 'backend']):
         return (
-            "ROLE CONTEXT — Tech role in UK:\n"
-            "Cities: London (80%+ of tech jobs — Shoreditch/Tech City for startups, "
-            "Canary Wharf for BFSI, King's Cross for Google/DeepMind, "
-            "South Bank for IBM/Salesforce), "
-            "Manchester (BBC, Auto Trader, Booking.com, Co-op Digital, Autotrader), "
-            "Edinburgh (Skyscanner, FanDuel, Administrate, Nucleus Financial), "
-            "Cambridge (ARM, Autonomy, Darktrace, Speechmatics, Raspberry Pi), "
-            "Bristol (Rolls-Royce, Airbus, Graphcore, Ultraleap).\n"
-            "Top companies — fintech/startup: Revolut, Monzo, Wise, Starling Bank, "
-            "Checkout.com, Klarna UK, Funding Circle, OakNorth, Atom Bank, "
-            "Deliveroo, Cazoo, Depop, Babylon Health, Tractable, Faculty AI.\n"
-            "Top companies — FAANG/global: Google DeepMind, Amazon, Microsoft, Meta, "
-            "Apple, Spotify, Booking.com, Expedia, Airbnb, Uber, Palantir.\n"
-            "Top companies — BFSI: HSBC, Barclays, Lloyds, NatWest, Standard Chartered, "
-            "Goldman Sachs, JPMorgan, Morgan Stanley, Deutsche Bank, UBS, Credit Suisse.\n"
-            "Top companies — consulting: Accenture, Capgemini, IBM, Deloitte, EY, KPMG, PwC.\n"
-            "Salary: £35,000-70,000/year (₹37-74 LPA equivalent). FAANG London £60,000-100,000+.\n"
+            "ROLE CONTEXT — Software Engineer in UK:\n"
+            "Cities: London (80%+ of tech jobs — Shoreditch for startups, Canary Wharf for BFSI, "
+            "King's Cross for Google/DeepMind), Manchester, Edinburgh, Cambridge, Bristol.\n"
+            "Companies — fintech: Revolut, Monzo, Wise, Starling Bank, Checkout.com.\n"
+            "Companies — FAANG: Google DeepMind, Amazon, Microsoft, Meta, Apple, Spotify, Booking.com.\n"
+            "Companies — BFSI: HSBC, Barclays, Lloyds, NatWest, Goldman Sachs, JPMorgan.\n"
+            "Companies — consulting: Accenture, Capgemini, Deloitte, EY, KPMG, PwC.\n"
+            "Expected stack: Java/Python/C#, cloud (AWS/Azure), microservices.\n"
+            "Interview bar: mix of US-style (FAANG) and European (CV depth, less LeetCode).\n"
+            "Salary: £35,000-70,000/year (₹37-74 LPA). FAANG London £60,000-100,000+.\n"
             "CV norms: 2 pages, no photo, no DOB. Called 'CV' not resume.\n"
-            "Visa: Skilled Worker visa, employer-sponsored. Notice period 1-3 months.\n"
-            "Interview bar: mix of US-style (FAANG) and European (more CV depth, less LeetCode).\n"
+            "Visa: Skilled Worker visa. Notice period 1-3 months standard.\n"
             "DO NOT apply India-specific service company norms."
+        )
+    # ── AI / ML ───────────────────────────────────────────────────────────────
+    if any(x in r for x in ['ai engineer', 'ai/ml', 'ml engineer', 'ai agentic']):
+        return (
+            "ROLE CONTEXT — AI/ML Engineer in UK:\n"
+            "Primary hub: London (Google DeepMind HQ, Meta AI London, Amazon AI).\n"
+            "Companies: DeepMind, Faculty AI, Tractable, Graphcore, BenevolentAI.\n"
+            "Expected: Python, PyTorch, NLP, computer vision, strong research or applied background.\n"
+            "Salary: £45,000-80,000/year. DeepMind/FAANG £70,000-120,000+.\n"
+            "Key signals: publications, conference talks, shipped AI products, PhD valued.\n"
+            "DO NOT apply India-specific norms."
+        )
+    # ── Data ──────────────────────────────────────────────────────────────────
+    if 'data' in r:
+        return (
+            "ROLE CONTEXT — Data role in UK:\n"
+            "Companies: banks (HSBC, Barclays), fintech (Monzo, Revolut), FAANG, consultancies.\n"
+            "Expected: SQL, Python, Tableau/Power BI, cloud analytics, GDPR awareness.\n"
+            "Salary: £35,000-65,000/year. Senior £60,000-90,000.\n"
+            "DO NOT apply India-specific norms."
         )
     return (
         f"ROLE CONTEXT — {r.title()} in UK:\n"
@@ -604,7 +718,7 @@ def get_city_hint(market: str, company_type: str) -> str:
             "Behavioural (STAR format) rounds are standard everywhere.\n"
             "Visa: H1B sponsorship is a real constraint — OPT/CPT candidates have 3-year window.\n"
             "Salary context: SDE fresher $100-160K TC at FAANG, $80-120K at mid-tier. "
-            "AI Engineer $120-180K TC at top companies. Bay Area pays 20-30% more than other cities.\n"
+            "AI Agentic Engineer $120-180K TC at top companies. Bay Area pays 20-30% more than other cities.\n"
             "DO NOT apply India-specific norms (CGPA cutoffs, college tier, service company patterns)."
         )
 
@@ -616,7 +730,7 @@ def get_city_hint(market: str, company_type: str) -> str:
             "Tax-free salaries — AED compensation is take-home. Convert: 1 AED ≈ ₹23.\n"
             "Visa: employer-sponsored work visa standard. Notice period 1-3 months typical.\n"
             "Salary context: SDE fresher AED 8,000-15,000/month (₹18-35 LPA equivalent). "
-            "AI Engineer AED 12,000-20,000/month. Senior roles AED 20,000-40,000/month.\n"
+            "AI Agentic Engineer AED 12,000-20,000/month. Senior roles AED 20,000-40,000/month.\n"
             "Key companies: Careem, Noon, Talabat, Emirates Group, ADNOC, Etisalat, G42 (AI/Abu Dhabi).\n"
             "Culture: multicultural workplace, English primary, Arabic a bonus not required.\n"
             "DO NOT apply India-specific service company norms."
@@ -629,7 +743,7 @@ def get_city_hint(market: str, company_type: str) -> str:
             "Resume norms: 1-2 pages, no photo, no DOB. Clean, concise formatting expected.\n"
             "Visa: Employment Pass (EP) for professionals. Min salary SGD 5,000/month for EP.\n"
             "Salary context: SDE fresher SGD 4,500-7,000/month (₹28-44 LPA equivalent). "
-            "AI Engineer SGD 6,000-10,000/month. FAANG Singapore SGD 8,000-15,000/month.\n"
+            "AI Agentic Engineer SGD 6,000-10,000/month. FAANG Singapore SGD 8,000-15,000/month.\n"
             "Key companies: Sea Group (Shopee/Garena), Grab, Lazada, DBS, Stripe, Google, Meta Singapore.\n"
             "Interview bar: similar to US FAANG for tech companies — DSA + system design.\n"
             "Cost of living is high — salary must be evaluated against SGD housing costs.\n"
@@ -644,7 +758,7 @@ def get_city_hint(market: str, company_type: str) -> str:
             "Resume norms: called 'CV' not resume. 2 pages standard. No photo, no DOB.\n"
             "Visa: Skilled Worker visa requires employer sponsorship. Points-based system.\n"
             "Salary context: SDE fresher £35,000-55,000/year (₹37-58 LPA equivalent). "
-            "AI Engineer £45,000-70,000/year. FAANG London £60,000-100,000+ with equity.\n"
+            "AI Agentic Engineer £45,000-70,000/year. FAANG London £60,000-100,000+ with equity.\n"
             "Key companies: DeepMind, Revolut, Monzo, Wise, Deliveroo, Amazon/Google/Meta London.\n"
             "Interview bar: mix of US-style (FAANG) and European (more CV depth, less LeetCode grind).\n"
             "Notice period: 1-3 months standard in UK.\n"
@@ -711,10 +825,15 @@ def build_system_prompt(
     agent_specific_constraints: str = "",
 ) -> str:
     from datetime import datetime
+    from backend.market_data import ROLE_TO_CATEGORY
     current_date = datetime.now().strftime("%B %Y")
 
     city_hint = get_city_hint(market, company_type)
     role_calibration = get_role_calibration(role, company_type, market)
+
+    # Inject dynamic company list from market_config.db
+    role_cat = ROLE_TO_CATEGORY.get(role, "general")
+    company_section = _company_list_section(role_cat, company_type, market)
 
     constraints = UNIVERSAL_CONSTRAINTS.format(
         role=role,
@@ -733,12 +852,14 @@ CONTEXT:
 - Market calibration: {city_hint}
 
 {role_calibration}
-
+{company_section}
 YOUR TASK:
 {agent_task}
 
 OUTPUT RULES:
 {agent_output_rules}
+
+TOKEN BUDGET: You have approximately 3000 tokens for your response. Plan your JSON output to fit within this budget. Be concise — if a field has no evidence, use an empty list or empty string. Do not pad with filler words.
 
 {constraints}
 

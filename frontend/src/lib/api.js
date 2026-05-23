@@ -1,7 +1,19 @@
 const BASE = '/api'
+const TIMEOUT = 30000
+
+async function fetchWithTimeout(url, options = {}, timeout = TIMEOUT) {
+  const controller = new AbortController()
+  const id = setTimeout(() => controller.abort(), timeout)
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal })
+    return res
+  } finally {
+    clearTimeout(id)
+  }
+}
 
 export async function sessionInit({ role, market, company_type, experience_level }) {
-  const res = await fetch(`${BASE}/session-init`, {
+  const res = await fetchWithTimeout(`${BASE}/session-init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ role, market, company_type, experience_level }),
@@ -23,7 +35,7 @@ export async function submitAnalysis({ sessionId, file, role, company_type, mark
   form.append('opted_in_corpus', optedInCorpus ? 'true' : 'false')
   form.append('file', file)
 
-  const res = await fetch(`${BASE}/analyse`, { method: 'POST', body: form })
+  const res = await fetchWithTimeout(`${BASE}/analyse`, { method: 'POST', body: form })
   if (!res.ok) {
     const body = await res.text()
     throw new Error(body)
@@ -32,13 +44,13 @@ export async function submitAnalysis({ sessionId, file, role, company_type, mark
 }
 
 export async function getSessionState(sessionId) {
-  const res = await fetch(`${BASE}/session/${sessionId}/state`)
+  const res = await fetchWithTimeout(`${BASE}/session/${sessionId}/state`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
 
 export async function submitFollowup({ sessionId, section, question }) {
-  const res = await fetch(`${BASE}/followup`, {
+  const res = await fetchWithTimeout(`${BASE}/followup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId, section, question }),
@@ -48,15 +60,19 @@ export async function submitFollowup({ sessionId, section, question }) {
 }
 
 export async function submitFeedback({ sessionId, useful, role, market, company_type }) {
-  await fetch(`${BASE}/feedback`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId, useful, role, market, company_type }),
-  })
+  try {
+    await fetchWithTimeout(`${BASE}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, useful, role, market, company_type }),
+    })
+  } catch (e) {
+    // silently ignore — feedback is fire-and-forget
+  }
 }
 
 export async function requestToken(email) {
-  const res = await fetch(`${BASE}/token`, {
+  const res = await fetchWithTimeout(`${BASE}/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email }),
@@ -66,7 +82,7 @@ export async function requestToken(email) {
 }
 
 export async function verifyToken({ token, sessionId }) {
-  const res = await fetch(`${BASE}/token/verify`, {
+  const res = await fetchWithTimeout(`${BASE}/token/verify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token, session_id: sessionId }),
@@ -76,6 +92,6 @@ export async function verifyToken({ token, sessionId }) {
 }
 
 export function createWebSocket(sessionId) {
-  const wsBase = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return new WebSocket(`${wsBase}//${window.location.host}/api/ws/${sessionId}`)
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return new WebSocket(`${proto}//${window.location.host}/api/ws/${sessionId}`)
 }

@@ -47,7 +47,7 @@ function parseContent(text) {
  */
 function parseActionPlan(text) {
   if (!text) return null
-  const stepPattern = /(?:^|\n)\s*(?:\d+[\.\)]|Step\s+\d+:?)\s+/gm
+  const stepPattern = /(?:^|\n)\s*(?:\d+[\.\)]|Step\s+\d+:?)\s+/gim
   const hasSteps = stepPattern.test(text)
   if (!hasSteps) return null
 

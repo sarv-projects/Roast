@@ -47,14 +47,15 @@ TIER_1_COMBINATIONS = [
     ("Backend Engineer", "Indian Product Company", "India"),
     ("Backend Engineer", "Startup", "India"),
 
-    # AI / ML
-    ("AI Engineer", "Indian Product Company", "India"),
-    ("AI Engineer", "Startup", "India"),
-    ("AI Engineer", "MNC India (Non-FAANG)", "India"),
-    ("AI Engineer", "FAANG / Big Tech", "India"),
-    ("AI/ML Engineer", "Indian Product Company", "India"),
-    ("AI/ML Engineer", "Startup", "India"),
-    ("AI/ML Engineer", "MNC India (Non-FAANG)", "India"),
+    # AI Agentic Engineer
+    ("AI Agentic Engineer", "Indian Product Company", "India"),
+    ("AI Agentic Engineer", "Startup", "India"),
+    ("AI Agentic Engineer", "MNC India (Non-FAANG)", "India"),
+    ("AI Agentic Engineer", "FAANG / Big Tech", "India"),
+    ("AI Agentic Engineer", "FAANG / Big Tech", "USA"),
+    ("AI Agentic Engineer", "Startup", "USA"),
+    ("AI Agentic Engineer", "Startup", "UAE"),
+    ("AI Agentic Engineer", "Startup", "UK"),
 
     # Data
     ("Data Analyst", "Indian Product Company", "India"),
@@ -84,10 +85,22 @@ TIER_1_COMBINATIONS = [
     ("Product Manager", "FAANG / Big Tech", "India"),
     ("DevOps / SRE", "Indian Product Company", "India"),
     ("DevOps / SRE", "Startup", "India"),
+    ("DevOps / SRE", "FAANG / Big Tech", "India"),
+    ("Platform Engineer", "Indian Product Company", "India"),
+    ("Platform Engineer", "FAANG / Big Tech", "India"),
+    ("Platform Engineer", "MNC India (Non-FAANG)", "India"),
     ("Business Analyst", "Indian Product Company", "India"),
     ("Business Analyst", "Indian Service Company", "India"),
     ("Business Analyst", "MNC India (Non-FAANG)", "India"),
     ("Business Analyst", "Consulting / IB", "India"),
+
+    # International market combos (key ones from prepopulate)
+    ("Software Engineer / Associate", "FAANG / Big Tech", "USA"),
+    ("SDE2 / Senior SDE", "FAANG / Big Tech", "USA"),
+    ("AI Agentic Engineer", "FAANG / Big Tech", "USA"),
+    ("Data Scientist", "FAANG / Big Tech", "USA"),
+    ("Software Engineer / Associate", "FAANG / Big Tech", "Singapore"),
+    ("Software Engineer / Associate", "FAANG / Big Tech", "UK"),
 ]
 
 
@@ -130,10 +143,10 @@ def _get_active_combinations() -> list[tuple[str, str, str]]:
                 count = redis.get(key)
                 if count and int(count) >= 3:  # at least 3 analyses before auto-refresh
                     # key format: combo_count:{role}:{company_type}:{market}
-                    raw = key.replace("combo_count:", "")
-                    # role/company_type/market are separated by : but may contain spaces
-                    # orchestrator uses f"combo_count:{role}:{company_type}:{market}"
-                    parts = raw.split(":")
+                    raw = key.replace("combo_count:", "", 1)
+                    # role, company_type, and market are separated by : but may contain spaces.
+                    # Split into exactly 3 parts using rsplit to preserve names with colons.
+                    parts = raw.rsplit(":", 2)
                     if len(parts) == 3:
                         active.add((parts[0], parts[1], parts[2]))
             if cursor == 0:

@@ -1,7 +1,24 @@
 import os
 import tempfile
 import time
+import atexit
 import asyncio
+
+# Track temp files for crash cleanup
+_temp_files: set[str] = set()
+
+
+def _cleanup_temp_files():
+    for path in list(_temp_files):
+        try:
+            if os.path.exists(path):
+                os.unlink(path)
+        except Exception:
+            pass
+        _temp_files.discard(path)
+
+
+atexit.register(_cleanup_temp_files)
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Request, UploadFile, Form
 from backend.storage.rate_limit import check_and_increment_rate_limit
@@ -15,7 +32,7 @@ import structlog
 router = APIRouter()
 logger = structlog.get_logger()
 
-BOT_TIMING_GATE_SECONDS = 3.0
+BOT_TIMING_GATE_SECONDS = 1.0
 
 
 async def _run_pipeline_and_stream(
@@ -129,12 +146,14 @@ async def analyse(
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
+    _temp_files.add(tmp_path)
 
     try:
         pdf_result = extract_text_from_pdf(tmp_path)
         links = extract_links(tmp_path)
     finally:
         os.unlink(tmp_path)
+        _temp_files.discard(tmp_path)
 
     if pdf_result["error"]:
         raise HTTPException(status_code=422, detail=f"PDF read error: {pdf_result['error']}")

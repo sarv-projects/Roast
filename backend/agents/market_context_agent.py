@@ -2,11 +2,109 @@ import json
 import structlog
 from backend.agents.schemas import JDRequirements, MarketContextOutput
 from backend.agents.prompts.template import build_system_prompt
-from backend.agents.prompts.market_context_prompt import VERSIONS as MC_VERSIONS, ACTIVE as MC_ACTIVE
+from backend.agents.prompts.market_context_prompt import get_market_context_task
 from backend.llm.router import call_groq_8b
 from backend.agents.json_utils import extract_json
+from backend.market_data import get_role_weights, ROLE_TO_CATEGORY
 
 logger = structlog.get_logger()
+
+# ── Weight map rules (enforced programmatically, not just in prompt) ──────────
+
+_JUNIOR_DEFAULTS: dict[str, float] = {
+    "dsa": 0.7, "projects": 0.75, "cgpa": 0.4,
+    "experience": 0.5, "open_source": 0.4, "college_tier": 0.3,
+}
+
+_FRESHER_DEFAULTS: dict[str, float] = {
+    "dsa": 0.5, "projects": 0.7, "cgpa": 0.6,
+    "experience": 0.0, "open_source": 0.3, "college_tier": 0.6,
+}
+
+_MID_DEFAULTS: dict[str, float] = {
+    "dsa": 0.5, "projects": 0.6, "cgpa": 0.2,
+    "experience": 0.8, "open_source": 0.4, "college_tier": 0.1,
+}
+
+_SENIOR_DEFAULTS: dict[str, float] = {
+    "dsa": 0.4, "projects": 0.4, "cgpa": 0.1,
+    "experience": 0.9, "open_source": 0.5, "college_tier": 0.05,
+}
+
+_STAFF_DEFAULTS: dict[str, float] = {
+    "dsa": 0.3, "projects": 0.3, "cgpa": 0.0,
+    "experience": 0.95, "open_source": 0.5, "college_tier": 0.0,
+}
+
+_EXPERIENCE_MAP: dict[str, dict[str, float]] = {
+    "Student": _FRESHER_DEFAULTS,
+    "Fresher": _FRESHER_DEFAULTS,
+    "Junior": _JUNIOR_DEFAULTS,
+    "Mid": _MID_DEFAULTS,
+    "Mid-Level": _MID_DEFAULTS,
+    "Senior": _SENIOR_DEFAULTS,
+    "Staff": _STAFF_DEFAULTS,
+    "Principal": _STAFF_DEFAULTS,
+}
+
+_COMPANY_OVERRIDES: dict[str, dict[str, tuple[float, float]]] = {
+    "FAANG":               {"dsa": (0.9, 1.0), "open_source": (0.5, 0.5)},
+    "FAANG / Big Tech":    {"dsa": (0.9, 1.0), "open_source": (0.5, 0.5)},
+    "Indian Service Company":  {"dsa": (0.0, 0.3), "cgpa_add": 0.15, "college_tier_add": 0.1},
+    "Startup":             {"dsa": (0.2, 0.4), "projects": (0.85, 0.85), "open_source": (0.6, 0.6)},
+    "Indian Product Company":  {"dsa": (0.6, 0.8), "projects": (0.75, 0.75)},
+    "MNC India (Non-FAANG)":  {"dsa": (0.5, 0.5), "cgpa_add": 0.1},
+    "Semiconductor":       {"dsa": (0.3, 0.3), "projects": (0.8, 0.8), "open_source": (0.2, 0.2)},
+    "Semiconductor / Hardware": {"dsa": (0.3, 0.3), "projects": (0.8, 0.8), "open_source": (0.2, 0.2)},
+    "Consulting / IB":     {"dsa": (0.2, 0.2), "projects": (0.5, 0.5), "cgpa_add": 0.1},
+}
+
+
+def _enforce_weight_map(
+    llm_weights: dict[str, float],
+    experience_level: str,
+    company_type: str,
+    role: str = "",
+) -> dict[str, float]:
+    """Apply the prompt's rules programmatically so the LLM can't ignore them."""
+    # Start with experience-level defaults
+    base = dict(_EXPERIENCE_MAP.get(experience_level, _JUNIOR_DEFAULTS))
+
+    # Fetch role-specific weights
+    role_weights: dict[str, float] = {}
+    if role:
+        role_cat = ROLE_TO_CATEGORY.get(role, "")
+        role_weights = get_role_weights(role_cat) if role_cat else {}
+
+    # Merge LLM values, clamping per company type rules.
+    # BUT: if a role-specific weight exists for a key, the role is the authority
+    # and company clamping does NOT apply to that key.
+    company_rules = _COMPANY_OVERRIDES.get(company_type, {})
+    for key in base:
+        has_role_override = key in role_weights and role_weights[key] is not None
+        llm_val = llm_weights.get(key)
+
+        if has_role_override:
+            # Role knows best — use role weight directly, ignore LLM and company bounds
+            base[key] = role_weights[key]
+        elif llm_val is not None:
+            rule = company_rules.get(key)
+            if rule:
+                lo, hi = rule
+                base[key] = max(lo, min(hi, llm_val))
+            else:
+                base[key] = max(0.0, min(1.0, llm_val))
+
+    # Apply additive modifiers (always apply, even when role overrides key)
+    cgpa_add = company_rules.get("cgpa_add", 0.0)
+    if cgpa_add:
+        base["cgpa"] = max(0.0, min(1.0, base["cgpa"] + cgpa_add))
+    ct_add = company_rules.get("college_tier_add", 0.0)
+    if ct_add:
+        base["college_tier"] = max(0.0, min(1.0, base["college_tier"] + ct_add))
+
+    return base
+
 
 # ── JD Parser ─────────────────────────────────────────────────────────────────
 
@@ -80,7 +178,7 @@ async def run_market_context_agent(
     Agent 1 — runs alone first. All parallel agents wait for its output.
     Interprets FullMarketContext into weight_map and calibration structures.
     """
-    task = MC_VERSIONS[MC_ACTIVE]
+    task = get_market_context_task()
 
     system = build_system_prompt(
         role=role,
@@ -137,6 +235,13 @@ Produce the MarketContextOutput JSON."""
                 "experience": 0.7, "open_source": 0.4, "college_tier": 0.4
             }
 
+        # Enforce weight rules programmatically — the LLM can't be trusted to
+        # follow the prompt rules consistently (e.g. it sets dsa=0 for Indian
+        # Product Company despite the prompt saying 0.6-0.8).
+        data["weight_map"] = _enforce_weight_map(
+            data["weight_map"], experience_level, company_type, role,
+        )
+
         # Inject JD requirements into output if provided
         if jd_requirements:
             data["jd_requirements"] = jd_requirements.model_dump()
@@ -148,23 +253,24 @@ Produce the MarketContextOutput JSON."""
             session_id=session_id,
             confidence=output.confidence,
             model=meta.get("model"),
-            prompt_version=MC_ACTIVE,
+            prompt_version="v1",
         )
 
         return output
 
     except Exception as e:
         logger.error("market_context_agent_failed", error=str(e), session_id=session_id)
-        # Return a safe fallback with LOW confidence
+        fallback_weights = _enforce_weight_map(
+            {"dsa": 0.7, "projects": 0.7, "cgpa": 0.5,
+             "experience": 0.7, "open_source": 0.4, "college_tier": 0.4},
+            experience_level, company_type, role,
+        )
         return MarketContextOutput(
             market_norms=f"Standard {role} hiring norms for {market}",
             format_expectations="Standard resume format",
             competitive_pool_description="Competitive pool data unavailable",
             red_flag_triggers=[],
-            weight_map={
-                "dsa": 0.7, "projects": 0.7, "cgpa": 0.5,
-                "experience": 0.7, "open_source": 0.4, "college_tier": 0.4
-            },
+            weight_map=fallback_weights,
             live_context_summary="Market intelligence unavailable for this analysis.",
             confidence="LOW",
         )

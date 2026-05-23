@@ -1,4 +1,6 @@
 import os
+import secrets
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -40,10 +42,24 @@ DISCORD_WEBHOOK_URL = get_optional_key("DISCORD_WEBHOOK_URL")
 RESEND_API_KEY = get_optional_key("RESEND_API_KEY")
 
 # ── Security ───────────────────────────────────────────────
-_hmac_default = "dev-secret-change-in-prod" if ENVIRONMENT != "production" else None
-HMAC_SECRET = get_optional_key("HMAC_SECRET", _hmac_default)
-if ENVIRONMENT == "production" and not HMAC_SECRET:
-    raise ValueError("HMAC_SECRET must be set in production. Generate with: python3 -c \"import secrets; print(secrets.token_hex(32))\"")
+_HMAC_SECRET_FILE = Path(__file__).parent / ".hmac_secret"
+
+def _get_or_generate_hmac_secret() -> str:
+    """Generate a persistent HMAC secret on first run, store it in a file."""
+    if ENVIRONMENT == "production":
+        value = os.getenv("HMAC_SECRET")
+        if not value:
+            raise ValueError("HMAC_SECRET must be set in production. Generate with: python3 -c \"import secrets; print(secrets.token_hex(32))\"")
+        return value
+    # Dev mode: generate once and persist to file so hot reloads don't invalidate tokens
+    if _HMAC_SECRET_FILE.exists():
+        return _HMAC_SECRET_FILE.read_text().strip()
+    new_secret = secrets.token_hex(32)
+    _HMAC_SECRET_FILE.write_text(new_secret)
+    _HMAC_SECRET_FILE.chmod(0o600)
+    return new_secret
+
+HMAC_SECRET = _get_or_generate_hmac_secret()
 
 # ── CORS ───────────────────────────────────────────────────
 # Comma-separated list of allowed origins, e.g. "https://roast.dev,https://www.roast.dev"

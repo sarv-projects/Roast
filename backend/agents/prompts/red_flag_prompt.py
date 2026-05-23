@@ -2,8 +2,9 @@
 Red flag hunting prompt — self_sabotage defined, 9 hunting categories.
 """
 
-VERSIONS = {
-    "v1": """
+
+def get_red_flag_task(role: str, company_type: str, market: str) -> str:
+    return f"""
 Hunt for red flags in this resume. You also perform the visual scan.
 
 PART A — RED FLAGS:
@@ -51,10 +52,72 @@ HUNT SPECIFICALLY FOR THESE — they are the most common and most damaging:
    Only apply this flag for Student/Fresher level — not for experienced candidates.
 
 9. GENERIC SUMMARY / FILLER LANGUAGE:
-   "Passionate about technology", "enthusiastic learner", "results-oriented professional",
-   "seeking challenging opportunities", "team player with strong communication skills"
-   These add zero information and waste the most-read section of the resume.
-   Flag and provide a specific rewrite based on the candidate's actual strongest signal.
+    "Passionate about technology", "enthusiastic learner", "results-oriented professional",
+    "seeking challenging opportunities", "team player with strong communication skills"
+    These add zero information and waste the most-read section of the resume.
+    Flag and provide a specific rewrite based on the candidate's actual strongest signal.
+    ALSO: detect AI-generated filler — overly polished bullet points with no real specifics,
+    generic sentence structures that read like ChatGPT output, all bullet points starting
+    with the same past-tense verb pattern. Flag with "possible AI-generated text" note.
+
+10. ATS KEYWORD GAPS:
+    Cross-reference the resume text against expected keywords for {role} at {company_type}.
+    If critical keywords from the expected stack are entirely absent, flag them.
+    This is the #1 reason Indian resumes never reach a human — ATS filters by keyword.
+    For example: a DevOps resume that never mentions "Docker" or "Kubernetes" will
+    be auto-rejected by most ATS systems before a recruiter sees it.
+    Only flag if at least 2 critical keywords are missing.
+
+11. ROLE-SPECIFIC MISTAKES:
+    Apply role-specific checks based on {role} at {company_type}:
+    
+    - SDE / Full Stack / Backend: missing GitHub is a MINOR flag (not major — many 
+      Indian SDEs don't have active GitHub). Missing DSA signal is a MAJOR flag 
+      for product companies. Listing every language ever used ("Python, Java, C++, 
+      Go, Rust, JavaScript, TypeScript, Kotlin, PHP") without depth signals is a 
+      MEDIUM flag — it reads as keyword stuffing.
+    
+    - AI Agentic Engineer / AI/ML Engineer: no GitHub or Hugging Face link is a 
+      MAJOR flag — AI work is inherently public. Colab notebook vs shipped product 
+      — flag if the resume implies product work but links only to notebooks.
+      No mention of model evaluation metrics is a MEDIUM flag.
+    
+    - DevOps / SRE / Platform Engineer: missing metrics (uptime, latency, incident 
+      counts) is a HIGH flag — DevOps is measured by numbers. Listing every CI/CD 
+      tool without showing what they were used for is a MEDIUM flag. No mention 
+      of on-call or incident response for mid-level+ is a MEDIUM flag.
+    
+    - Product Manager: missing product metrics (DAU, retention, conversion) is a 
+      HIGH flag. No mention of cross-functional collaboration is a MEDIUM flag.
+      Listing a product launch without stating the impact is a MEDIUM flag.
+    
+    - Business Analyst: no mention of specific tools (SQL, Excel, Tableau/Power BI) 
+      is a MEDIUM flag. Missing domain context (what industry they worked in) is a 
+      LOW flag. Generic requirement gathering without specific artefacts produced 
+      (BRD, FRD, user stories) is a MEDIUM flag.
+    
+    - Embedded Systems: mentioning cloud/Docker/React as primary skills is a DISTRACTING 
+      flag — suggests web dev trying for embedded. Missing hardware protocols 
+      (CAN, SPI, I2C, UART) at mid-level+ is a MAJOR flag. Git/GitHub emphasis 
+      without hardware debugging experience is a LOW flag.
+    
+    - VLSI Design Engineer: any web development or full-stack skills in prime position 
+      is a DISTRACTING flag. Missing EDA tool experience (Synopsys, Cadence, Mentor) 
+      is a MAJOR flag. Python/Perl scripting for automation should be a minor signal, 
+      not the main skill.
+    
+    - Data Analyst: missing or vague SQL signal is a HIGH flag — SQL is non-negotiable.
+      No mention of any BI tool (Tableau, Power BI, Looker) is a MEDIUM flag.
+      Data Scientist resumes applying for Data Analyst roles is a MINOR flag — 
+      check if skills section is mismatched with the role.
+    
+    - Data Scientist: missing statistics fundamentals is a MAJOR flag. Listing every 
+      ML library without showing what was built with them is a MEDIUM flag.
+      No mention of business impact from models is a MEDIUM flag.
+    
+    - Data Engineer: no mention of SQL at mid-level+ is a HIGH flag. Missing 
+      data pipeline concepts (ETL/ELT, scheduling, orchestration) is a MEDIUM flag.
+      Only mentioning "big data tools" without pipeline specifics is a LOW flag.
 
 For each red flag, output:
 {{
@@ -73,7 +136,7 @@ CATEGORY DEFINITIONS:
 - fit: wrong signals for this specific company type or market
 - market_specific: specific to this market/role combination (e.g. no CGPA for Indian service company fresher)
 - plausibility: claims that seem exaggerated or technically impossible given the timeline
-- self_sabotage: candidate actively harming their own application — photo on USA resume, listing "hobbies: cricket, Netflix" on a senior resume, 2-page resume for a fresher with 0 YOE, objective statement that reveals wrong target role, generic summary that wastes the prime real estate
+- self_sabotage: candidate actively harming their own application — photo on USA resume, listing "hobbies: cricket, Netflix" on a senior resume, 2-page resume for a fresher with 0 YOE, objective statement that reveals wrong target role, generic summary that wastes prime real estate, AI-generated filler text with no real specifics, missing critical ATS keywords for this role
 
 INFERENCE CHAIN RULES — CRITICAL:
 Must follow this exact format: "Recruiter sees X → assumes Y → decides Z"
@@ -97,11 +160,18 @@ WRONG inference chain example:
 "Recruiters look for quantifiable achievements. This shows that you lack impact metrics which will negatively impact your chances."
 
 ROLE-SPECIFIC RULES:
+- SDE / Full Stack / Backend: missing GitHub is NOT a red flag (many Indian SDEs don't maintain public GitHub). Missing DSA signal is a MAJOR concern for product companies, MINOR for service companies. Listing 8+ programming languages without depth is a LOW flag.
 - Embedded Engineer: missing GitHub is NOT a red flag (proprietary firmware cannot be open-sourced)
-- AI Engineer: no public models is only a MILD flag for applied roles, not HIGH severity
+- AI Agentic Engineer / AI/ML: no GitHub or Hugging Face is a MODERATE flag for applied roles, not HIGH. No model evaluation metrics is a MEDIUM flag. Java/C++ in primary position on an AI resume is a DISTRACTING flag — suggests wrong stack.
 - Student/Fresher: do not flag short experience — they are expected to have none
 - VLSI Engineer: missing GitHub, Docker, cloud experience are NOT red flags — irrelevant for hardware roles
-- Data Analyst: missing GitHub is NOT a red flag — most analyst work is internal dashboards
+- Data Analyst: missing GitHub is NOT a red flag — most analyst work is internal dashboards. Missing SQL or BI tool mention IS a red flag.
+- Data Scientist: missing statistics fundamentals IS a red flag. Listing every ML library without project context IS a red flag.
+- Data Engineer: missing SQL or data pipeline concepts (ETL/ELT, orchestration) IS a red flag at mid-level+.
+- DevOps / SRE: missing metrics (uptime, latency percentages) is a HIGH flag — DevOps is measured by numbers. Missing IaC tool mention (Terraform/Ansible) is a MEDIUM flag at mid-level+.
+- Product Manager: missing product metrics (DAU, retention, conversion) is a HIGH flag. No mention of cross-functional collaboration is a MEDIUM flag.
+- Business Analyst: missing SQL or BI tool is a MEDIUM flag. Vague requirement gathering without specific artefacts is a MEDIUM flag.
+- Platform Engineer: missing Kubernetes + CI/CD + cloud experience is a HIGH flag — Platform is senior-level infrastructure. Missing developer experience (DX) signals is a MEDIUM flag.
 
 PART B — VISUAL SCAN:
 Note any formatting, layout, or visual issues in visual_scan_notes.
@@ -110,11 +180,9 @@ Examples: inconsistent fonts, too long, too short, photo present (bad for USA), 
 Output format:
 {{
   "red_flags": [...],
-  "visual_scan_notes": "specific notes on visual/formatting issues"
+  "visual_scan_notes": "specific notes on visual/formatting issues",
+  "confidence": "HIGH if you found clear, verifiable flags backed by resume text, MEDIUM if some flags are borderline, LOW if resume text is thin or flags are speculative"
 }}
 
 Return empty list for red_flags if none found. Never hallucinate flags.
 """.strip()
-}
-
-ACTIVE = "v1"

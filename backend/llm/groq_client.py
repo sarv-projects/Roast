@@ -1,4 +1,5 @@
 import asyncio
+import random
 from typing import Any
 import structlog
 from groq import AsyncGroq, RateLimitError, APIStatusError
@@ -10,14 +11,20 @@ logger = structlog.get_logger()
 
 # Parse comma-separated keys into a pool
 _keys = [k.strip() for k in GROQ_API_KEYS.split(",") if k.strip()]
-_call_count = 0  # round-robin counter
-_call_lock = asyncio.Lock()
+
+# Distributed round-robin via Redis INCR — works across multiple workers
+async def _get_key_index() -> int:
+    """Use Redis INCR for distributed key rotation. Each worker gets a different key."""
+    idx = redis.incr("groq:round_robin_counter")
+    return (idx - 1) % len(_keys)
 
 # RPD limits per model — tracked server-side since Groq doesn't expose RPD in headers
 RPD_LIMITS = {
     "meta-llama/llama-4-scout-17b-16e-instruct": 1000,
     "llama-3.3-70b-versatile": 1000,
     "qwen/qwen3-32b": 1000,
+    "openai/gpt-oss-20b": 1000,
+    "openai/gpt-oss-120b": 1000,
     "llama-3.1-8b-instant": 14400,
 }
 
@@ -26,11 +33,8 @@ RPM_FALLBACK_THRESHOLD = 50
 
 
 async def _get_client() -> tuple[AsyncGroq, int]:
-    """Round-robin across keys on every call — distributes load upfront."""
-    global _call_count
-    async with _call_lock:
-        idx = _call_count % len(_keys)
-        _call_count += 1
+    """Distributed round-robin across keys on every call."""
+    idx = await _get_key_index()
     return AsyncGroq(api_key=_keys[idx]), idx
 
 
@@ -59,19 +63,22 @@ def _check_rpd(model: str) -> bool:
 
 
 def _increment_rpd(model: str, key_idx: int = 0) -> None:
-    """Increment RPD counter for given key. Resets at midnight UTC via TTL."""
+    """Increment RPD counter for given key. Resets at midnight UTC via TTL with jitter."""
     key = _rpd_key(model, key_idx)
     count = redis.incr(key)
     if count == 1:
-        # First call today — set TTL to expire at midnight UTC
+        # First call today — set TTL to expire at midnight UTC with jitter
+        # Jagger prevents thundering herd at 00:00 UTC
         import time
         from datetime import datetime, timezone, timedelta
         now = datetime.now(timezone.utc)
         midnight = (now + timedelta(days=1)).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
-        ttl = int((midnight - now).total_seconds())
-        redis.expire(key, ttl)
+        base_ttl = int((midnight - now).total_seconds())
+        # Add up to 300s (5min) jitter to stagger expiration
+        jitter = random.randint(0, 300)
+        redis.expire(key, base_ttl + jitter)
 
 
 async def groq_chat(

@@ -9,6 +9,7 @@ from ingestion.levels_scraper import fetch_levels_salary
 from ingestion.extractor import process_raw_text
 from ingestion.search import insert_signal, delete_signals_for_combo, count_signals_for_combo
 from ingestion.embeddings import embed_all_missing
+from ingestion.database import get_connection
 
 # ── Semaphores ────────────────────────────────────────────────────────────────
 # Limit concurrent API calls to stay within rate limits
@@ -156,6 +157,7 @@ async def run_ingestion_for_combo(
 
     for result_list in deep_results:
         if isinstance(result_list, Exception):
+            logger.warning("tavily_deep_query_failed", error=str(result_list), role=role, market=market)
             continue
         for item in result_list:
             content = item.get("content", "").strip()
@@ -187,9 +189,6 @@ async def run_ingestion_for_combo(
             duration_seconds=round(time.time() - start, 2),
         )
 
-    # Step 3 — NOW safe to delete old signals (we have new data coming)
-    delete_signals_for_combo(role, company_type, market)
-
     tavily_count = len(raw_texts)
 
     # Step 4 — scrape Levels.fyi for relevant companies
@@ -210,6 +209,21 @@ async def run_ingestion_for_combo(
     levels_count = len(levels_texts)
     all_texts = raw_texts + levels_texts
 
+    # Step 3 — Delete old signals BEFORE inserting new ones.
+    # This runs after Tavily confirms we have fresh data. Any crash during
+    # insertion means data loss, but the Tavily data is fresh and will be
+    # re-fetched on the next run. Running delete AFTER insert was wiping new
+    # signals (critical bug).
+    conn = get_connection()
+    conn.execute("BEGIN")
+    try:
+        delete_signals_for_combo(role, company_type, market)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+    finally:
+        conn.close()
+
     # Step 5 — process all texts in parallel
     process_tasks = [
         _process_one(text, role, market, source, company_type)
@@ -221,9 +235,10 @@ async def run_ingestion_for_combo(
     stored = sum(1 for r in results if r is True)
     discarded = len(results) - stored
 
-    # Step 6 — generate embeddings for all new rows
+    # Step 7 — generate embeddings for all new rows
     if stored > 0:
-        embed_all_missing()
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, embed_all_missing)
 
     duration = time.time() - start
 

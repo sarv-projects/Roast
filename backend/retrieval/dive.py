@@ -313,24 +313,9 @@ def _get_freshness_label(signals: list[dict]) -> str:
 
 def _breaking_signal_key(role: str, company_type: str, market: str) -> str:
     """Redis key for breaking signal — keyed per market + role_category + company_type."""
-    role_category = _role_to_category(role)
+    from backend.market_data import get_role_category
+    role_category = get_role_category(role)
     return f"breaking:{market.lower()}:{role_category}:{company_type.lower().replace(' ', '_')}"
-
-
-def _role_to_category(role: str) -> str:
-    """Map role to a broader category for breaking signal keying."""
-    role_lower = role.lower()
-    if any(x in role_lower for x in ["sde", "full stack", "backend", "software engineer", "associate"]):
-        return "sde"
-    if any(x in role_lower for x in ["ml", "ai", "machine learning"]):
-        return "ai_ml"
-    if any(x in role_lower for x in ["data"]):
-        return "data"
-    if any(x in role_lower for x in ["devops", "sre"]):
-        return "devops"
-    if any(x in role_lower for x in ["embedded", "vlsi"]):
-        return "hardware"
-    return "general"
 
 
 def _get_breaking_signal(role: str, company_type: str, market: str) -> tuple[str, bool]:
@@ -513,3 +498,48 @@ async def run_dive(
         breaking_available=breaking_available,
         raw_signal_count=len(deduped),
     )
+
+
+# ── Cache warming ─────────────────────────────────────────────────────────────
+
+# Top combos to pre-warm on server startup — covers 80%+ of traffic
+WARMUP_COMBOS = [
+    ("Software Engineer / Associate", "Indian Product Company", "India"),
+    ("Software Engineer / Associate", "Startup", "India"),
+    ("SDE1", "Indian Product Company", "India"),
+    ("SDE1", "FAANG / Big Tech", "India"),
+    ("AI Agentic Engineer", "Startup", "India"),
+    ("AI Agentic Engineer", "FAANG / Big Tech", "India"),
+    ("Data Analyst", "Indian Product Company", "India"),
+    ("Data Scientist", "Startup", "India"),
+    ("SDE2 / Senior SDE", "FAANG / Big Tech", "India"),
+    ("Software Engineer / Associate", "FAANG / Big Tech", "USA"),
+]
+
+
+async def warmup_cache(experience_level: str = "Student / Fresher") -> dict:
+    """
+    Pre-warm DIVE cache for top combos on server startup.
+    Returns dict of {combo: status} — "hit" if cached, "warmed" if fetched, "skipped" if no data.
+    """
+    results = {}
+    for role, company_type, market in WARMUP_COMBOS:
+        combo_key = f"{role}:{company_type}:{market}"
+        # Skip if already cached
+        if _get_cached_snapshot(role, company_type, market):
+            results[combo_key] = "hit"
+            continue
+        # Skip if no signals in SQLite
+        from ingestion.search import count_signals_for_combo
+        if count_signals_for_combo(role, company_type, market) == 0:
+            results[combo_key] = "skipped"
+            continue
+        # Run DIVE to populate cache
+        try:
+            await run_dive(role, company_type, market, experience_level)
+            results[combo_key] = "warmed"
+            logger.info("cache_warmed", combo=combo_key)
+        except Exception as e:
+            results[combo_key] = f"failed:{e}"
+            logger.warning("cache_warmup_failed", combo=combo_key, error=str(e))
+    return results

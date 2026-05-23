@@ -1,7 +1,7 @@
 """
 TechnicalDepthAgent — agentic version with tool calling.
 LLM reads the resume and decides what to search for itself.
-35s timeout — falls back to non-agentic llama-3.1-8b if exceeded.
+Uses gpt-oss-120b (agentic loop), 90s timeout — falls back to non-agentic llama-3.1-8b if exceeded.
 """
 
 import json
@@ -10,14 +10,11 @@ import structlog
 from typing import Any
 from pydantic import BaseModel
 from backend.agents.tech_search import lookup_technology
-from backend.llm.groq_client import groq_chat
+from backend.llm.groq_client import groq_chat, _get_client as _get_groq_client, _rotate as _rotate_groq, _keys
 from groq import AsyncGroq
-from backend.config import GROQ_API_KEYS
 from backend.agents.json_utils import extract_json
 
 logger = structlog.get_logger()
-
-_keys = [k.strip() for k in GROQ_API_KEYS.split(",") if k.strip()]
 
 # ── Output schema ─────────────────────────────────────────────────────────────
 
@@ -49,17 +46,15 @@ SKIP_SEARCH_TERMS = {
     'mcp server', 'mcp', 'model context protocol',
     # LLM providers
     'groq', 'openai', 'gemini', 'cerebras', 'nvidia nim', 'deepgram', 'anthropic',
-    # Mainstream frameworks
+    # Mainstream frameworks (keep updating as tech evolves)
     'langchain', 'fastapi', 'redis', 'websocket', 'docker', 'kubernetes',
     'pytorch', 'tensorflow', 'huggingface', 'react', 'python', 'sql',
     'github actions', 'flask', 'django', 'express', 'nodejs',
     # Generic AI concepts
     'rag', 'llm', 'rest api', 'microservices', 'ci/cd',
     'groq distillation', 'distillation llm',
-    # LangGraph is mainstream enough
-    'langgraph',
     # Robotics/AI algorithms the model knows well enough
-    'bayesian next-best-view', 'bayesian nbv', 'next-best-view',
+    'next-best-view',
     # sqlite-vec is niche but search results are thin — model can evaluate from name
     'sqlite-vec',
 }
@@ -113,7 +108,7 @@ These are role-specific — "advanced" means different things for different role
 
 Role-specific difficulty calibration examples:
 - SDE/Backend: tutorial=CRUD API, intermediate=multi-service system with auth, advanced=distributed system with consistency guarantees, exceptional=novel protocol or OSS contribution
-- AI Engineer: tutorial=Colab notebook, intermediate=RAG pipeline with basic retrieval, advanced=production multi-agent system with fallback chains and observability, exceptional=novel retrieval architecture or fine-tuned model in production
+- AI Agentic Engineer: tutorial=Colab notebook, intermediate=RAG pipeline with basic retrieval, advanced=production multi-agent system with fallback chains and observability, exceptional=novel retrieval architecture or fine-tuned model in production
 - Data Analyst: tutorial=Excel pivot tables, intermediate=SQL window functions + Python pandas, advanced=end-to-end ML pipeline with deployed model, exceptional=self-built analytics infrastructure used by org
 - Data Engineer: tutorial=basic ETL script, intermediate=Airflow DAG with error handling, advanced=streaming pipeline with exactly-once semantics, exceptional=novel data architecture at scale
 - VLSI: tutorial=basic RTL module, intermediate=verified RTL with UVM testbench, advanced=timing-closed design with DFT, exceptional=silicon-proven design or novel verification methodology
@@ -164,18 +159,45 @@ def _parse_output(data: dict) -> TechnicalDepthOutput:
 # ── Agentic loop ──────────────────────────────────────────────────────────────
 
 async def _run_agentic_loop(
-    client: AsyncGroq,
+    client: Any,
+    key_idx: int,
     messages: list[dict],
     session_id: str,
 ) -> TechnicalDepthOutput:
     MAX_TOOL_CALLS = 2
+    MAX_RETRIES = len(_keys) if hasattr(_keys, '__len__') else 3
     tool_call_count = 0
     searches_made = []
 
+    async def _call_with_retry(model: str, msgs: list, **kwargs) -> Any:
+        nonlocal client, key_idx
+        from backend.llm.circuit_breaker import groq_circuit
+        from backend.llm.groq_client import _check_rpd, _increment_rpd
+        for attempt in range(MAX_RETRIES):
+            if groq_circuit.should_skip():
+                raise RuntimeError("groq_circuit_open")
+            if not _check_rpd(model):
+                raise RuntimeError(f"groq_rpd_exhausted:{model}")
+            try:
+                response = await client.chat.completions.create(
+                    model=model, messages=msgs, **kwargs,
+                )
+                _increment_rpd(model, key_idx % len(_keys))
+                return response
+            except Exception as e:
+                err = str(e).lower()
+                if "429" in err or "rate limit" in err or "rate_limit" in err:
+                    key_idx = _rotate_groq(key_idx)
+                    client = AsyncGroq(api_key=_keys[key_idx % len(_keys)])
+                    if attempt < MAX_RETRIES - 1:
+                        logger.info("tech_depth_key_rotated", key_idx=key_idx, attempt=attempt, session_id=session_id)
+                        await asyncio.sleep(1)
+                        continue
+                raise
+
     while tool_call_count <= MAX_TOOL_CALLS:
-        response = await client.chat.completions.create(
-            model="openai/gpt-oss-120b",
-            messages=messages,  # type: ignore
+        response = await _call_with_retry(
+            "openai/gpt-oss-120b", messages,
             tools=[SEARCH_TOOL],  # type: ignore
             tool_choice="auto",
             max_tokens=2000,
@@ -236,10 +258,9 @@ async def _run_agentic_loop(
         "Research complete. Write the full JSON evaluation now. "
         "Include ALL fields. Do not return null for any field."
     )})
-    response = await client.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        messages=messages,  # type: ignore
-        tool_choice="none",  # explicitly disable tools for final call
+    response = await _call_with_retry(
+        "openai/gpt-oss-120b", messages,
+        tool_choice="none",
         tools=[SEARCH_TOOL],  # type: ignore
         max_tokens=3000,
         temperature=0.2,
@@ -273,19 +294,19 @@ async def run_technical_depth_agent(
     messages: list[dict] = [
         {"role": "system", "content": system},
         {"role": "user", "content": (
-            f"RESUME:\n{resume_text[:8000]}\n\n"
+            f"<resume>\n{resume_text[:8000]}\n</resume>\n\n"
             f"TARGET: {role} at {company_type} in {market} ({experience_level})\n\n"
             "Evaluate technical depth. Search only for genuinely niche/unfamiliar tech. "
             "Produce the final JSON when ready."
         )},
     ]
 
-    client = AsyncGroq(api_key=_keys[0])
+    client, key_idx = await _get_groq_client()
 
     try:
         return await asyncio.wait_for(
-            _run_agentic_loop(client, messages, session_id),
-            timeout=55.0,
+            _run_agentic_loop(client, key_idx, messages, session_id),
+            timeout=90.0,
         )
     except asyncio.TimeoutError:
         logger.warning("tech_depth_timeout_falling_back", session_id=session_id)
@@ -309,7 +330,7 @@ async def _fallback_evaluation(
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": (
-            f"RESUME:\n{resume_text[:8000]}\n\n"
+            f"<resume>\n{resume_text[:8000]}\n</resume>\n\n"
             "Evaluate technical depth based on your existing knowledge. "
             "Return JSON only, no tool calls."
         )},

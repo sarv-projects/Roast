@@ -3,11 +3,10 @@ import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from backend.routes.ws_manager import connect, disconnect, heartbeat_loop
 from backend.storage.redis_client import redis
-from backend.storage.session_store import get_session
+from backend.storage.session_store import get_session, SESSION_TTL
 
 router = APIRouter()
 
-SESSION_TTL = 3600
 SHARE_TTL = 7 * 24 * 3600  # 7 days
 
 

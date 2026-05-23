@@ -21,6 +21,15 @@ def init_db() -> None:
     Safe to call multiple times — IF NOT EXISTS prevents duplicate creation.
     """
     conn = get_connection()
+    conn.execute("PRAGMA journal_mode=WAL")
+
+    # Integrity check on startup — detect corruption from container restarts
+    result = conn.execute("PRAGMA integrity_check").fetchone()
+    if result[0] != "ok":
+        import structlog
+        logger = structlog.get_logger()
+        logger.error("market_intel_db_corrupt", result=result[0])
+        raise RuntimeError(f"market_intel.db is corrupt: {result[0]}")
 
     with conn:
         # ── Main table ────────────────────────────────────────────────────────

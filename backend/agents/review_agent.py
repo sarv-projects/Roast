@@ -4,10 +4,10 @@ import structlog
 from backend.agents.schemas import (
     ReviewOutput, MarketContextOutput, RedFlagOutput,
     SixSecondAndTrajectoryOutput, CompetitiveOutput, JDRequirements,
-    TechnicalDepthOutput
+    TechnicalDepthOutput, ResumeFacts
 )
 from backend.agents.prompts.template import build_system_prompt
-from backend.agents.prompts.review_prompt import get_review_task, ACTIVE as RV_ACTIVE
+from backend.agents.prompts.review_prompt import get_review_task
 from backend.llm.router import call_review_agent
 from backend.agents.json_utils import extract_json
 
@@ -158,6 +158,7 @@ async def run_review_agent(
     user_context: str = "",
     jd_requirements: JDRequirements | None = None,
     technical_depth: TechnicalDepthOutput | None = None,
+    resume_facts: ResumeFacts | None = None,
     session_id: str = "",
 ) -> ReviewOutput:
     """
@@ -167,6 +168,13 @@ async def run_review_agent(
     """
     task = get_review_task(market=market, company_type=company_type, experience_level=experience_level)
 
+    # Inject extracted resume facts into SYSTEM prompt so the LLM respects them
+    from backend.agents.resume_extractor import facts_to_prompt
+    facts_section = facts_to_prompt(resume_facts) if resume_facts else ""
+    agent_constraints = ""
+    if facts_section:
+        agent_constraints = f"{facts_section}\n\nCRITICAL: The facts above were extracted from the actual resume. Do NOT contradict them."
+
     system = build_system_prompt(
         role=role,
         company_type=company_type,
@@ -174,6 +182,7 @@ async def run_review_agent(
         experience_level=experience_level,
         agent_task=task,
         agent_output_rules="Return only valid JSON matching the schema. No markdown. No explanation.",
+        agent_specific_constraints=agent_constraints,
     )
 
     upstream = _build_upstream_summary(
@@ -184,8 +193,9 @@ async def run_review_agent(
         {"role": "system", "content": system},
         {
             "role": "user",
-            "content": f"""RESUME TEXT:
+            "content": f"""<resume>
 {resume_text[:8000]}
+</resume>
 
 UPSTREAM ANALYSIS:
 {upstream}
@@ -218,6 +228,8 @@ Write the complete review JSON.""",
             for field in ["jd_alignment_section"]:
                 if field not in data:
                     data[field] = ""
+            if "confidence" not in data or data["confidence"] not in ("HIGH", "MEDIUM", "LOW"):
+                data["confidence"] = "MEDIUM"
             for field in ["six_second_followups", "whats_hurting_followups",
                           "career_story_followups", "competitive_followups"]:
                 if field not in data or not data[field]:
@@ -290,7 +302,7 @@ Write the complete review JSON.""",
                 word_count=_count_words(review),
                 provider=meta.get("provider"),
                 model=meta.get("model"),
-                prompt_version=f"{RV_ACTIVE}:{market}:{company_type}",
+                prompt_version=f"v1:{market}:{company_type}",
             )
 
             return review
@@ -321,6 +333,7 @@ def _assemble_partial_review(
         tldr_shortlist_chance=competitive.percentile_estimate.range,
         tldr_biggest_blocker=flag_text,
         tldr_fix_first=competitive.highest_leverage_change,
+        confidence="LOW",
         whats_working_section=" ".join(competitive.strengths_vs_pool[:2]),
         whats_hurting_section=" ".join([f.inference_chain for f in high_flags[:2]]),
         career_story_section=six_second.career_story,

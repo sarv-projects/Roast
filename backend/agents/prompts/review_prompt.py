@@ -202,48 +202,20 @@ def _get_tier_example(market: str, company_type: str) -> str:
 def _get_company_naming_rule(market: str, company_type: str) -> str:
     """
     Return an inline company-naming rule for the review.
-    Prevents cross-category company name pollution.
+    Queries market_config.db dynamically — no hardcoded company lists.
     """
-    ct = company_type.lower()
+    try:
+        from backend.market_data import get_company_naming_rule as _db_rule
+        rule = _db_rule(company_type, market)
+        if rule:
+            return rule
+    except Exception:
+        pass
 
     if market != "India":
         return f"Name real {market} companies appropriate for this role — not Indian company names."
 
-    if "service" in ct:
-        return (
-            "Name Infosys, Wipro, TCS, Cognizant, HCL, Tech Mahindra — "
-            "not product companies, not AI startups."
-        )
-    elif "faang" in ct or "big tech" in ct:
-        return (
-            "Name Google, Amazon, Microsoft, Meta, Adobe, Stripe, Atlassian — "
-            "not service companies, not Indian-only startups."
-        )
-    elif "startup" in ct:
-        return (
-            "Name Razorpay, Zepto, CRED, Meesho, Sarvam, Krutrim (for AI roles), "
-            "PhonePe, BrowserStack, Juspay — not MNCs or service companies."
-        )
-    elif "mnc" in ct or "non-faang" in ct:
-        return (
-            "Name Walmart Global Tech, JPMorgan, Goldman Sachs tech, SAP Labs, "
-            "Bosch, Siemens, Oracle, IBM — not service companies or early-stage startups."
-        )
-    elif "semiconductor" in ct or "hardware" in ct:
-        return (
-            "Name Qualcomm, NXP, Texas Instruments, Bosch, Continental, Intel, "
-            "Nvidia, Tata Elxsi, KPIT — not software product companies."
-        )
-    elif "consulting" in ct or "ib" in ct:
-        return (
-            "Name McKinsey, BCG, Deloitte, EY, KPMG, Goldman Sachs, JPMorgan — "
-            "not product or service companies."
-        )
-    else:
-        return (
-            "Name Flipkart, Swiggy, Razorpay, PhonePe, CRED, Groww, BrowserStack, "
-            "Zepto, Navi — not service companies or AI-only startups for non-AI roles."
-        )
+    return f"Name real {company_type} companies appropriate for this role."
 
 
 def get_review_task(market: str, company_type: str, experience_level: str = "") -> str:
@@ -264,11 +236,21 @@ def get_review_task(market: str, company_type: str, experience_level: str = "") 
 COMPANY NAMING RULE: {company_naming_rule}
 
 You receive:
+- Resume text (the actual words on the resume — read this FIRST and refer to it)
 - Technical depth evaluation (from TechnicalDepthAgent — genuine technical assessment)
 - Market context (what's being hired for right now)
 - Red flags (what a recruiter would flag)
 - Six-second scan (how a non-technical recruiter perceives this)
 - Competitive position (where this sits in the applicant pool)
+
+CRITICAL — FACTUAL ACCURACY RULES:
+- ALWAYS read the resume text before making any claim about what the resume does or does not contain.
+- NEVER say "no mention of X" or "the resume lacks X" before searching the resume text for X.
+- If the resume explicitly mentions something, you MUST acknowledge it. Contradicting clear resume text will fail quality gate.
+- Example: if resume says "falls back across 5 LLM providers with circuit breakers," you CANNOT say "no mention of multi-provider fallback."
+- Example: if resume lists "Docker, GitHub Actions, CI/CD" in skills, you CANNOT say "skills listed lack project evidence for Docker."
+- Every weakness claim must be VERIFIABLE against the resume text. Quote the exact resume line when pointing out a gap.
+- If you're unsure whether something is in the resume, search for it. Do not assume absence.
 
 STRUCTURE OF THE REVIEW:
 
@@ -337,6 +319,7 @@ OUTPUT SCHEMA — return valid JSON:
   "tldr_shortlist_chance": "honest one sentence — name specific company types where they will/won't get calls",
   "tldr_biggest_blocker": "the single biggest thing costing shortlists — be specific, name the consequence",
   "tldr_fix_first": "one specific action with exact wording — what to change and how",
+  "confidence": "HIGH if you have strong corpus data and clear signals, MEDIUM if some signals are thin, LOW if data is sparse or contradictory",
   "whats_working_section": "prose — genuine technical strengths, name projects and companies specifically",
   "whats_hurting_section": "prose — every weakness with full inference chain, specific company consequences, concrete fixes",
   "career_story_section": "prose — what story this resume tells, whether it's accurate, what the real story is",
@@ -361,24 +344,13 @@ CRITICAL RULES — VIOLATIONS WILL FAIL QUALITY GATE:
 - whats_hurting_section MUST explain WHY each gap matters for THIS specific role at THIS company type
 - Each follow-up question MUST mention a specific project name, skill, company, or decision from this resume
 - Generic questions like "tell me more" or "can you elaborate" will fail the quality gate
-- The review must feel like it was written by someone who actually read this specific resume, not a template
+    - The review must feel like it was written by someone who actually read this specific resume, not a template
 
 RULES:
 - No bullet points inside prose sections — flowing paragraphs only
-- whats_working_section: 80-200 words (shorter if little to praise — do not pad)
-- All other prose sections: AT LEAST 120 words each
-- Total words across all five prose sections: 600-1500
+- whats_working_section: 80-300 words (shorter if little to praise — do not pad; expand when genuinely deserved)
+- All other prose sections: AT LEAST 120 words each, maximum 350 each
+- Total words across all five prose sections: 600-1800
 - action_plan_section must be a prose paragraph, NOT a JSON array
 - Never mention that you are an AI
 - Never flag future dates as suspicious — current date is in the system prompt""".strip()
-
-
-# ── Backward compatibility ────────────────────────────────────────────────────
-# VERSIONS and ACTIVE are kept so any tooling reading them still works.
-# At runtime, run_review_agent() calls get_review_task() instead.
-
-VERSIONS = {
-    "v1": get_review_task("India", "Indian Product Company", "Junior"),
-}
-
-ACTIVE = "v1"

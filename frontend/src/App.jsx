@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Flame, ArrowLeft } from 'lucide-react'
 import { LandingPage } from './components/LandingPage'
 import { AnalysisProgress } from './components/AnalysisProgress'
 import { ResultsPage } from './components/ResultsPage'
 import { useWebSocket } from './hooks/useWebSocket'
-import './index.css'
+import { getSessionState } from './lib/api'
 
 function getAnalysisCount() {
   return parseInt(localStorage.getItem('roast_analysis_count') || '0')
@@ -20,7 +20,6 @@ function VisitorCounter() {
   const [count, setCount] = useState(null)
 
   useEffect(() => {
-    // Fetch total analyses from backend
     fetch('/health')
       .then(r => r.json())
       .then(d => {
@@ -107,18 +106,47 @@ export default function App() {
   const [sessionId, setSessionId] = useState(null)
   const [meta, setMeta] = useState(null)
 
-  const handleAnalysisStarted = (sid, metaData) => {
+  // Session recovery on mount — if user refreshes during analysis
+  useEffect(() => {
+    const saved = localStorage.getItem('roast_pending_session')
+    if (saved) {
+      try {
+        const { sid, meta: savedMeta } = JSON.parse(saved)
+        getSessionState(sid).then(state => {
+          if (state?.status === 'in_progress' || state?.status === 'completed') {
+            setSessionId(sid)
+            setMeta(savedMeta)
+            setView('analysis')
+          } else {
+            localStorage.removeItem('roast_pending_session')
+          }
+        }).catch(() => {
+          localStorage.removeItem('roast_pending_session')
+        })
+      } catch {
+        localStorage.removeItem('roast_pending_session')
+      }
+    }
+  }, [])
+
+  const handleAnalysisStarted = useCallback((sid, metaData) => {
     incrementAnalysisCount()
+    localStorage.setItem('roast_pending_session', JSON.stringify({ sid, meta: metaData }))
     setSessionId(sid)
     setMeta(metaData)
     setView('analysis')
-  }
+  }, [])
+
+  const goToLanding = useCallback(() => {
+    localStorage.removeItem('roast_pending_session')
+    setView('landing')
+  }, [])
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: 'var(--roast-bg)', color: 'var(--roast-text)' }}>
       <div className="bg-mesh" />
 
-      <NavBar view={view} onBack={() => setView('landing')} />
+      <NavBar view={view} onBack={goToLanding} />
 
       <div className="pt-[52px]">
         <AnimatePresence mode="wait">

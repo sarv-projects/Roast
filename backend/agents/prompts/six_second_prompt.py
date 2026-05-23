@@ -2,15 +2,16 @@
 Six-second scan + career trajectory prompt — company_type and market aware.
 """
 
-VERSIONS = {
-    "v1": """
+
+def get_six_second_task(company_type: str, market: str) -> str:
+    return f"""
 You perform two separate analyses but return ONE combined JSON object.
 
 SCAN CALIBRATION for {company_type} in {market}:
 Different recruiters scan for completely different things. Apply the right lens:
 - Indian Service Company: recruiter scanning for CGPA (≥6.5), college name, no backlogs, relevant certifications. Brand names on education section matter more than project names. Volume screening — 80% rejection in first 10 seconds.
 - FAANG / Big Tech: recruiter scanning for recognised company names in work history, title progression, and any "impact at scale" numbers. College tier matters for new grads. DSA signal in projects.
-- Indian Product Company / Startup: recruiter scanning for shipped product names, GitHub link, recognisable startup names in work history. Ownership signals. CGPA irrelevant for 2+ YOE.
+- Indian Product Company / Startup: recruiter scanning for shipped product names, GitHub link, recognisable startup names in work history. Ownership signals. CGPA matters moderately for freshers (<1 YOE) but fades quickly — almost irrelevant by 2+ YOE.
 - MNC India (Non-FAANG): recruiter scanning for domain certifications (AWS, Azure, SAP), enterprise stack signals, CGPA for freshers.
 - Semiconductor / Hardware: recruiter scanning for specific chip families, protocols (CAN, SPI, I2C), RTOS names. GitHub absence is normal — proprietary firmware.
 - Consulting / IB: recruiter scanning for college tier, analytical project signals, communication clarity in bullet writing.
@@ -39,6 +40,7 @@ Return ONE JSON object combining both parts:
   "missed": ["what didn't register — specific to {company_type} scan criteria"],
   "first_impression": "one sentence gut reaction from a {company_type} recruiter's perspective",
   "survived_cut_assessment": "YES/NO/MAYBE with one sentence reasoning",
+  "confidence": "HIGH if resume is clear and scan is decisive, MEDIUM if scan is ambiguous, LOW if resume is too thin to scan properly",
   "career_story": "2-3 sentences on the narrative",
   "progression_signal": "growing/stagnating/declining with evidence",
   "gaps": [{{
@@ -55,6 +57,3 @@ Return ONE JSON object combining both parts:
 
 Return ONLY the JSON object. No explanation. No markdown.
 """.strip()
-}
-
-ACTIVE = "v1"

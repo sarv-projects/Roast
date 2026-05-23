@@ -74,20 +74,24 @@ function RoastingOverlay() {
   )
 }
 
+// ⚠️ KEEP IN SYNC with backend/market_data.py:ROLE_TO_CATEGORY and backend/routes/cron.py:TIER_1_COMBINATIONS
 const ROLES = [
   'Software Engineer / Associate', 'SDE1', 'SDE2 / Senior SDE',
   'Full Stack Engineer', 'Backend Engineer', 'Embedded Systems Engineer',
   'VLSI Design Engineer', 'Data Analyst', 'Data Scientist', 'Data Engineer',
-  'AI/ML Engineer', 'AI Engineer', 'DevOps / SRE', 'Product Manager', 'Business Analyst',
+  'AI Agentic Engineer', 'DevOps / SRE', 'Platform Engineer', 'Product Manager', 'Business Analyst',
 ]
 
+// ⚠️ KEEP IN SYNC with backend/market_data.py:ROLE_TO_CATEGORY (company_type values)
 const COMPANY_TYPES = [
   'Indian Product Company', 'Indian Service Company', 'FAANG / Big Tech',
   'Startup', 'Consulting / IB', 'Semiconductor / Hardware', 'MNC India (Non-FAANG)',
 ]
 
+// ⚠️ KEEP IN SYNC with backend/market_data.py:ROLE_TO_CATEGORY (market values)
 const MARKETS = ['India', 'USA', 'UAE', 'Singapore', 'UK']
 
+// ⚠️ KEEP IN SYNC with backend/market_data.py:EXPERIENCE_LEVEL_TO_BAND
 const EXPERIENCE_LEVELS = [
   'Student / Fresher', 'Junior', 'Mid-level', 'Senior', 'Staff / Principal',
 ]
@@ -191,39 +195,6 @@ function AutoTextarea({ value, onChange, placeholder, maxLength, rows = 3 }) {
   )
 }
 
-// ── Live roast count — desktop social proof ───────────────────────────────────
-
-function LiveRoastCount() {
-  const [count, setCount] = useState(null)
-
-  useEffect(() => {
-    fetch('/health')
-      .then(r => r.json())
-      .then(d => { if (d.total_analyses) setCount(d.total_analyses) })
-      .catch(() => {})
-  }, [])
-
-  if (!count) return null
-
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ delay: 0.5, duration: 0.4 }}
-      className="hidden lg:flex items-center gap-3"
-    >
-      <div className="flex -space-x-2">
-        {['🧑‍💻','👩‍💻','🧑‍🎓','👨‍💼','👩‍🔬'].map((e, i) => (
-          <div key={i} className="w-8 h-8 rounded-full bg-[--roast-surface-2] border-2 border-[--roast-bg] flex items-center justify-center text-sm">{e}</div>
-        ))}
-      </div>
-      <p className="text-xs text-[--roast-muted]">
-        <span className="text-[--roast-text] font-semibold">{count.toLocaleString()} roasts</span> delivered
-      </p>
-    </motion.div>
-  )
-}
-
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function LandingPage({ onAnalysisStarted }) {
@@ -241,15 +212,6 @@ export function LandingPage({ onAnalysisStarted }) {
   const [loading, setLoading] = useState(false)
   const [roasting, setRoasting] = useState(false)
   const [error, setError] = useState('')
-  const [sessionId, setSessionId] = useState(null)
-
-  useEffect(() => {
-    sessionInit({
-      role: 'SDE1', market: 'India',
-      company_type: 'Indian Product Company',
-      experience_level: 'Student / Fresher',
-    }).then(s => setSessionId(s.session_id)).catch(() => {})
-  }, [])
 
   const isReferred = new URLSearchParams(window.location.search).has('ref') ||
     window.location.search.includes('utm_')
@@ -261,14 +223,11 @@ export function LandingPage({ onAnalysisStarted }) {
     setLoading(true)
     setError('')
     try {
-      let sid = sessionId
-      if (!sid) {
-        const session = await sessionInit({ role, market, company_type: companyType, experience_level: experienceLevel })
-        sid = session.session_id
-      }
+      const session = await sessionInit({ role, market, company_type: companyType, experience_level: experienceLevel })
+      const sid = session.session_id
       await submitAnalysis({ sessionId: sid, file, role, company_type: companyType, market, experience_level: experienceLevel, userContext, jdText, githubUrl, optedInCorpus: optedIn })
       setRoasting(true)
-      await new Promise(r => setTimeout(r, 2500))
+      await new Promise(r => setTimeout(r, 1500))
       onAnalysisStarted(sid, { role, companyType, market, experienceLevel })
     } catch (e) {
       if (e.message?.includes('too fast')) {
@@ -277,7 +236,7 @@ export function LandingPage({ onAnalysisStarted }) {
           await new Promise(r => setTimeout(r, 4000))
           await submitAnalysis({ sessionId: session.session_id, file, role, company_type: companyType, market, experience_level: experienceLevel, userContext, jdText, githubUrl, optedInCorpus: optedIn })
           setRoasting(true)
-          await new Promise(r => setTimeout(r, 2500))
+          await new Promise(r => setTimeout(r, 1500))
           onAnalysisStarted(session.session_id, { role, companyType, market, experienceLevel })
           return
         } catch (e2) {
@@ -363,9 +322,6 @@ export function LandingPage({ onAnalysisStarted }) {
                 </div>
               ))}
             </motion.div>
-
-            {/* Social proof — only visible on desktop, uses live count from /health */}
-            <LiveRoastCount />
 
           </div>
 

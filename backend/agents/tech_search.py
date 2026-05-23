@@ -89,18 +89,3 @@ def _ddg_search(query: str) -> list[dict]:
     """Synchronous DuckDuckGo search — run via asyncio.to_thread."""
     with DDGS() as ddgs:
         return list(ddgs.text(query, max_results=3))
-
-
-async def lookup_multiple(technologies: list[str], context: str = "") -> dict[str, str]:
-    """
-    Look up multiple technologies simultaneously.
-    Returns dict of {tech_name: description}.
-    Cache applies per-term — already-known terms return instantly.
-    """
-    tasks = [lookup_technology(tech, context) for tech in technologies]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    return {
-        tech: (result if isinstance(result, str) else "")
-        for tech, result in zip(technologies, results)
-    }

@@ -2,7 +2,7 @@ import json
 import structlog
 from backend.agents.schemas import SixSecondAndTrajectoryOutput, GapSignal
 from backend.agents.prompts.template import build_system_prompt
-from backend.agents.prompts.six_second_prompt import VERSIONS as SS_VERSIONS, ACTIVE as SS_ACTIVE
+from backend.agents.prompts.six_second_prompt import get_six_second_task
 from backend.agents.schemas import MarketContextOutput
 from backend.llm.router import call_six_second_agent as _call_agent
 from backend.agents.json_utils import extract_json
@@ -26,7 +26,7 @@ async def run_six_second_trajectory_agent(
     Part A: simulates 6-second recruiter scan.
     Part B: analyses career trajectory, gaps, progression.
     """
-    task = SS_VERSIONS[SS_ACTIVE].replace("{company_type}", company_type).replace("{market}", market)
+    task = get_six_second_task(company_type, market)
 
     system = build_system_prompt(
         role=role,
@@ -54,8 +54,9 @@ async def run_six_second_trajectory_agent(
             "content": f"""FIRST 200 WORDS (for 6-second scan simulation):
 {first_200}
 
-FULL RESUME TEXT:
+<resume>
 {resume_text[:8000]}
+</resume>
 
 USER CONTEXT: {user_context or 'None provided'}
 {links_section}
@@ -81,9 +82,13 @@ Produce the SixSecondAndTrajectory JSON output.""",
         # Coerce None to empty string for optional string fields
         for field in ["fresher_note", "github_signal", "linkedin_signal",
                       "progression_signal", "promotion_velocity", "skill_evolution",
-                      "career_story", "first_impression", "survived_cut_assessment"]:
+                      "career_story", "first_impression", "survived_cut_assessment",
+                      "confidence"]:
             if data.get(field) is None or data.get(field) == "":
-                data[field] = data.get(field) or ""
+                if field == "confidence":
+                    data[field] = "MEDIUM"
+                else:
+                    data[field] = data.get(field) or ""
 
         output = SixSecondAndTrajectoryOutput(**data)
 
@@ -93,7 +98,7 @@ Produce the SixSecondAndTrajectory JSON output.""",
             survived=output.survived_cut_assessment[:20],
             gaps_found=len(output.gaps),
             model=meta.get("model"),
-            prompt_version=SS_ACTIVE,
+            prompt_version="v1",
         )
 
         return output
@@ -104,6 +109,7 @@ Produce the SixSecondAndTrajectory JSON output.""",
             remembered=[], missed=[],
             first_impression="Analysis unavailable",
             survived_cut_assessment="MAYBE — analysis failed",
+            confidence="LOW",
             career_story="", progression_signal="", gaps=[],
             promotion_velocity="", skill_evolution="",
             fresher_note="", github_signal="", linkedin_signal="",

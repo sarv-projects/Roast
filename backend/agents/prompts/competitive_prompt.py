@@ -2,8 +2,9 @@
 Competitive positioning prompt — market-aware salary bands.
 """
 
-VERSIONS = {
-    "v1": """
+
+def get_competitive_task(role: str, company_type: str, market: str) -> str:
+    return f"""
 Assess where this resume sits in the actual applicant pool for {role} at {company_type} in {market}.
 
 You have access to:
@@ -50,6 +51,3 @@ Output:
 
 highest_leverage_change must be ONE specific thing calibrated to the experience level. Not generic advice.
 """.strip()
-}
-
-ACTIVE = "v1"

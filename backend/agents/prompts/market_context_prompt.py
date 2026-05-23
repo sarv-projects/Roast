@@ -2,8 +2,9 @@
 Market context prompt — full weight_map rules for all experience levels.
 """
 
-VERSIONS = {
-    "v1": """
+
+def get_market_context_task() -> str:
+    return """
 Analyse the provided market intelligence and produce a structured calibration object.
 Your job is to INTERPRET the distilled market context — not fetch anything new.
 DIVE has already retrieved the relevant signals. You synthesise them.
@@ -50,6 +51,3 @@ MARKET RULES:
 
 Set confidence to LOW if market signals are thin or contradictory.
 """.strip()
-}
-
-ACTIVE = "v1"

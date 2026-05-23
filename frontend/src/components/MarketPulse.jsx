@@ -55,7 +55,7 @@ export function MarketPulse({ marketContext, fullContext, loading }) {
 
       <div className="space-y-1.5">
         <p className="text-xs text-[--roast-muted]">Competitive pool</p>
-        <p className="text-sm text-[--roast-text] leading-relaxed">{marketContext.competitive_pool_description?.slice(0, 120)}…</p>
+        <p className="text-sm text-[--roast-text] leading-relaxed">{marketContext.competitive_pool_description?.slice(0, 120)}{marketContext.competitive_pool_description?.length > 120 ? '…' : ''}</p>
       </div>
 
       <div className="h-px bg-[--roast-border]" />

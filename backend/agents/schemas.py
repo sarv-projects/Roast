@@ -2,6 +2,42 @@ from typing import Literal
 from pydantic import BaseModel
 
 
+# ── Resume Extraction ──────────────────────────────────────────────────────────
+
+class ExtractedSkill(BaseModel):
+    name: str
+    evidence: str = ""            # which project/experience proves this skill
+    confidence: str = "verified"  # verified | claimed | inferred
+
+class ExtractedProject(BaseModel):
+    name: str
+    technologies: list[str] = []
+    description: str = ""
+    key_metrics: list[str] = []     # numbers, percentages, latency figures from description
+
+class ExtractedEducation(BaseModel):
+    institution: str = ""
+    degree: str = ""
+    cgpa: str = ""
+
+class ExtractedExperience(BaseModel):
+    company: str = ""
+    role: str = ""
+    duration: str = ""
+
+class ResumeFacts(BaseModel):
+    skills: list[ExtractedSkill] = []
+    projects: list[ExtractedProject] = []
+    education: list[ExtractedEducation] = []
+    experience: list[ExtractedExperience] = []
+    github_url: str = ""
+    linkedin_url: str = ""
+    total_projects: int = 0
+    has_production_experience: bool = False
+    has_shipped_product: bool = False
+    yoe_estimate: str = ""
+
+
 # ── JD Parser ─────────────────────────────────────────────────────────────────
 
 class JDRequirements(BaseModel):
@@ -40,6 +76,7 @@ class SixSecondAndTrajectoryOutput(BaseModel):
     missed: list[str]              # what didn't register
     first_impression: str
     survived_cut_assessment: str   # YES / NO / MAYBE with reasoning
+    confidence: Literal["HIGH", "MEDIUM", "LOW"] = "MEDIUM"  # how confident in the scan assessment
 
     # Part B — Career trajectory
     career_story: str
@@ -73,6 +110,7 @@ class RedFlag(BaseModel):
 class RedFlagOutput(BaseModel):
     red_flags: list[RedFlag]       # EMPTY LIST if no flags — never hallucinate
     visual_scan_notes: str         # formatting, layout, visual red flags
+    confidence: Literal["HIGH", "MEDIUM", "LOW"] = "MEDIUM"  # how confident in the flag assessment
 
 
 # ── Agent 4: CompetitivePositioningAgent ──────────────────────────────────────
@@ -101,6 +139,7 @@ class ReviewOutput(BaseModel):
     tldr_shortlist_chance: str     # e.g. "Below average for this market right now"
     tldr_biggest_blocker: str      # one sentence
     tldr_fix_first: str            # one specific action
+    confidence: Literal["HIGH", "MEDIUM", "LOW"] = "MEDIUM"  # how confident in the overall review
 
     # Prose sections
     whats_working_section: str

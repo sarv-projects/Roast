@@ -2,22 +2,21 @@ import asyncio
 import structlog
 from backend.llm.groq_client import groq_chat
 from backend.llm.gemini_client import gemini_chat, GEMINI_FLASH_LITE
-from backend.llm.cerebras_client import cerebras_chat
 from backend.llm.nvidia_nim_client import nim_chat
 from backend.llm.openrouter_client import openrouter_chat
 
 logger = structlog.get_logger()
 
 # ── ReviewAgent fallback chain ────────────────────────────────────────────────
-# Tried in order. Groq primary, then NVIDIA NIM
-# (40 RPM no daily cap), then Gemma as last resort, then OpenRouter emergency.
+# llama-3.3-70b primary — 32K max output, 36K TPM with 3 keys (shared with RedFlag).
+# Falls back to gpt-oss-20b (different TPM bucket), then qwen3, Gemini, NIM, OpenRouter.
 REVIEW_MODEL_CHAIN = [
-    ("groq",       "meta-llama/llama-4-scout-17b-16e-instruct"),  # 438 tok/s, 2K RPD
-    ("groq",       "llama-3.3-70b-versatile"),                    # 345 tok/s, 2K RPD
-    ("groq",       "qwen/qwen3-32b"),                             # 243 tok/s, 2K RPD
-    ("gemini",     GEMINI_FLASH_LITE),                           # 159 tok/s, 1.5K RPD — thinking disabled
-    ("nvidia_nim", None),                                         # 68 tok/s, no daily cap
-    ("openrouter", None),                                         # 50 RPD, emergency only
+    ("groq",       "llama-3.3-70b-versatile"),                       # 280 tok/s, 32K output, safe at 2 concurrent
+    ("groq",       "openai/gpt-oss-20b"),                            # 1000 tok/s, fits smaller prompts
+    ("groq",       "qwen/qwen3-32b"),                                # 400 tok/s, separate TPM bucket
+    ("gemini",     GEMINI_FLASH_LITE),                               # thinking disabled
+    ("nvidia_nim", None),                                             # no daily cap
+    ("openrouter", None),                                             # 50 RPD, emergency only
 ]
 
 
@@ -38,11 +37,6 @@ async def call_review_agent(
                 return await groq_chat(
                     messages=messages, model=model,
                     max_tokens=max_tokens, temperature=0.3,
-                    session_id=session_id,
-                )
-            elif provider == "cerebras":
-                return await cerebras_chat(
-                    messages=messages, max_tokens=max_tokens,
                     session_id=session_id,
                 )
             elif provider == "nvidia_nim":
@@ -118,18 +112,18 @@ async def call_technical_depth_agent(
     session_id: str = "",
 ) -> tuple[str, dict]:
     """
-    TechnicalDepthAgent uses gpt-oss-120b — separate RPM bucket, frontier quality.
-    gpt-oss-120b: 30 RPM, 1K RPD, 8K TPM per key (16K effective with 2 keys).
-    max_tokens=1500 keeps each call under 10% of combined TPM budget.
-    Falls back to llama-3.1-8b if needed.
+    Non-agentic fallback path for TechnicalDepthAgent.
+    The actual agentic loop (in technical_depth_agent.py) uses gpt-oss-120b.
+    This is called when the agentic loop times out.
+    Falls back to gpt-oss-120b for quality, then llama-3.1-8b.
     """
     try:
         return await groq_chat(
             messages=messages, model="openai/gpt-oss-120b",
             max_tokens=max_tokens, temperature=temperature, session_id=session_id,
         )
-    except Exception as e:
-        logger.warning("tech_depth_gpt_oss_failed_falling_back", error=str(e), session_id=session_id)
+    except Exception as gpt_err:
+        logger.warning("tech_depth_120b_failed_falling_back", error=str(gpt_err), session_id=session_id)
         return await groq_chat(
             messages=messages, model="llama-3.1-8b-instant",
             max_tokens=max_tokens, temperature=temperature, session_id=session_id,
@@ -168,7 +162,7 @@ async def call_competitive_agent(
 ) -> tuple[str, dict]:
     try:
         return await groq_chat(
-            messages=messages, model="qwen/qwen3-32b",
+            messages=messages, model="openai/gpt-oss-20b",
             max_tokens=max_tokens, temperature=temperature,
             session_id=session_id, agent_name="competitive_agent",
         )

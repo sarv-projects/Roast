@@ -10,6 +10,7 @@ from groq import AsyncGroq
 # Fast, proven for extraction tasks, sufficient quality for ingestion
 _keys = [k.strip() for k in GROQ_API_KEYS.split(",") if k.strip()]
 _current_index = 0
+_index_lock = asyncio.Lock()
 INGESTION_MODEL = "llama-3.1-8b-instant"
 
 
@@ -17,9 +18,10 @@ def _get_client() -> AsyncGroq:
     return AsyncGroq(api_key=_keys[_current_index])
 
 
-def _rotate():
-    global _current_index
-    _current_index = (_current_index + 1) % len(_keys)
+async def _rotate():
+    async with _index_lock:
+        global _current_index
+        _current_index = (_current_index + 1) % len(_keys)
 
 
 # ── Source tier definitions ───────────────────────────────────────────────────
@@ -168,7 +170,7 @@ async def process_raw_text(
         except Exception as e:
             error_str = str(e).lower()
             if "429" in error_str or "rate limit" in error_str:
-                _rotate()
+                await _rotate()
                 await asyncio.sleep(1)
             elif attempt == 2:
                 return None
@@ -176,12 +178,3 @@ async def process_raw_text(
                 await asyncio.sleep(0.5)
 
     return None
-
-
-# Keep classify_source for backward compatibility
-async def classify_source(text: str) -> SourceTier:
-    """Kept for backward compatibility. process_raw_text now does both."""
-    signal = await process_raw_text(text, "", "")
-    if signal is None:
-        return SourceTier.DISCARD
-    return SourceTier(signal.source_tier)

@@ -3,7 +3,7 @@
 # 🔥 ROAST
 ### Resume Intelligence System
 
-**[🌐 Live Demo ](https://roast-app-ckard.ondigitalocean.app)**
+**[🌐 Live Demo](https://roast-app-ckard.ondigitalocean.app)**
 
 > Drop your resume. Get destroyed. Get better.
 
@@ -21,7 +21,7 @@
 
 Most resume tools read your resume and say *"add more keywords."*
 
-ROAST does something different. It pulls **live market intelligence for your exact role and city before reading your resume** — then runs six specialised agents to produce a brutally honest, market-calibrated review. Not generic advice. Not keyword stuffing. The actual thought process a recruiter runs when they read your resume, calibrated against what's being hired for *this week*.
+ROAST does something different. It pulls **live market intelligence for your exact role and city before reading your resume** — extracts structured facts from your resume, then runs six specialised agents to produce a brutally honest, market-calibrated review. Not generic advice. Not keyword stuffing. The actual thought process a recruiter runs when they read your resume, calibrated against what's being hired for *this week*.
 
 **What ROAST does that no other tool does:**
 - Live job posting data from Naukri, Wellfound, Reddit, Levels.fyi — scraped monthly, not training data
@@ -51,15 +51,16 @@ flowchart TD
     B --> C{Validate PDF\nRate limit\nBot detection}
     C --> D[DIVE Retrieval Pipeline]
     D --> E[FullMarketContext]
+    D --> M[ResumeExtractor\nllama-3.1-8b]
     E --> G[MarketContextAgent\nGroq llama-3.1-8b]
     G --> H{Parallel Agents}
     H --> I[RedFlagAgent\nllama-3.3-70b-versatile]
     H --> J[SixSecondAgent\nqwen3-32b]
-    H --> K[CompetitiveAgent\nqwen3-32b]
+    H --> K[CompetitiveAgent\ngpt-oss-20b]
     H --> L[TechnicalDepthAgent\ngpt-oss-120b + DuckDuckGo]
-    I & J & K & L --> M[ReviewAgent\nllama-4-scout primary]
-    M --> N[WebSocket Stream]
-    N --> O[Results Page]
+    I & J & K & L & M --> N[ReviewAgent\nllama-3.3-70b primary]
+    N --> O[WebSocket Stream]
+    O --> P[Results Page]
 ```
 
 ### DIVE Retrieval Pipeline
@@ -100,6 +101,7 @@ flowchart TD
 sequenceDiagram
     participant O as Orchestrator
     participant D as DIVE
+    participant RE as ResumeExtractor
     participant MC as MarketContext
     participant RF as RedFlag
     participant SS as SixSecond
@@ -109,19 +111,21 @@ sequenceDiagram
 
     O->>D: role + market + company_type
     D-->>O: FullMarketContext
-    O->>MC: FullMarketContext (alone first)
+    O->>RE: resume_text
+    RE-->>O: ResumeFacts (cached by hash)
+    O->>MC: FullMarketContext + ResumeFacts
     MC-->>O: weight_map + calibration
     par Parallel execution
-        O->>RF: resume + market_context
+        O->>RF: resume + market_context + ResumeFacts
         O->>SS: resume + market_context
-        O->>CP: resume + market_context
+        O->>CP: resume + market_context + ResumeFacts
         O->>TD: resume (+ DuckDuckGo lookup)
     end
     RF-->>O: RedFlagOutput
     SS-->>O: SixSecondOutput
     CP-->>O: CompetitiveOutput
     TD-->>O: TechnicalDepthOutput
-    O->>RV: all upstream outputs
+    O->>RV: all upstream outputs + ResumeFacts
     RV-->>O: ReviewOutput (streamed via WebSocket)
 ```
 
@@ -131,6 +135,12 @@ sequenceDiagram
 
 ### TechnicalDepthAgent
 Evaluates your projects with genuine technical understanding — not keyword matching. Uses DuckDuckGo search in real time to look up unfamiliar technologies (Bayesian NBV, d-vector speaker verification, RRF fusion) before evaluating them. Rates difficulty as tutorial / intermediate / advanced / exceptional calibrated to your experience level.
+
+### Resume Fact Extractor
+Before any analysis, an 8B LLM extracts structured facts from your resume (skills, projects, education, experience, key metrics). These facts are passed to RedFlagAgent, CompetitiveAgent, and ReviewAgent — preventing the LLM from hallucinating or contradicting your actual resume content.
+
+### Key Metrics Extraction
+Latency figures, throughput numbers, and quantified achievements are extracted from project descriptions and made visible to all analysis agents. If your resume says "95+ live analyses" or "reduced latency from 10s to 3s", the system sees it and uses it.
 
 ### Inference Chains
 Every weakness comes with the recruiter's actual thought process:
@@ -170,18 +180,19 @@ Percentile estimate + expected CTC range calibrated to your role, company type, 
 
 ### LLM Routing
 | Agent | Model | Provider | Why |
-|---|---|---|---|
-| MarketContextAgent | llama-3.1-8b-instant | Groq | 14,400 RPD, fast synthesis |
-| RedFlagAgent | llama-3.3-70b-versatile → llama-3.1-8b fallback | Groq | Reliable JSON, separate RPM bucket |
-| SixSecondAgent | qwen/qwen3-32b → llama-3.1-8b fallback | Groq | Separate RPM bucket, reliable JSON |
-| CompetitiveAgent | qwen/qwen3-32b → NVIDIA NIM fallback | Groq / NVIDIA NIM | 60 RPM, strong reasoning |
-| TechnicalDepthAgent | gpt-oss-120b → llama-3.1-8b fallback | Groq | Frontier quality, tool calling |
-| ReviewAgent (primary) | llama-4-scout-17b-16e-instruct | Groq | 438 tok/s, 2K RPD |
-| ReviewAgent (fallback A) | llama-3.3-70b-versatile | Groq | 345 tok/s, 2K RPD |
-| ReviewAgent (fallback B) | qwen/qwen3-32b | Groq | 243 tok/s, 2K RPD |
-| ReviewAgent (fallback C) | gemini-2.5-flash-lite | Gemini API | 159 tok/s, 1.5K RPD |
-| ReviewAgent (fallback D) | llama-3.3-70b-instruct | NVIDIA NIM | 68 tok/s, no daily cap |
-| ReviewAgent (fallback E) | llama-3.3-70b:free | OpenRouter | 50 RPD, emergency only |
+|---|---|---|---|---|
+| MarketContextAgent | llama-3.1-8b-instant | Groq | Lightweight, 14.4K RPD |
+| RedFlagAgent | llama-3.3-70b-versatile → 8b | Groq | Reliable JSON |
+| SixSecondAgent | qwen/qwen3-32b → 8b | Groq | Structured output |
+| CompetitiveAgent | gpt-oss-20b → NVIDIA NIM | Groq / NIM | Better percentile reasoning |
+| TechnicalDepthAgent | gpt-oss-120b (agentic loop) → 8b | Groq | Frontier quality, tool calling |
+| ResumeExtractor | llama-3.1-8b-instant | Groq | Fast extraction, Redis cached |
+| ReviewAgent (primary) | llama-3.3-70b-versatile | Groq | 32K output, handles full review |
+| ReviewAgent (fallback A) | gpt-oss-20b | Groq | 1000 tok/s |
+| ReviewAgent (fallback B) | qwen/qwen3-32b | Groq | Separate TPM bucket |
+| ReviewAgent (fallback C) | gemini-2.5-flash-lite | Gemini | No TPM limit |
+| ReviewAgent (fallback D) | llama-3.3-70b-instruct | NIM | No daily cap |
+| ReviewAgent (fallback E) | llama-3.3-70b:free | OpenRouter | 50 RPD emergency |
 
 ### Data Sources
 | Source | Method | What it gives |
@@ -218,6 +229,7 @@ roast/
 │   │   ├── competitive_agent.py
 │   │   ├── technical_depth_agent.py  # Agentic — tool calling + DuckDuckGo
 │   │   ├── review_agent.py
+│   │   ├── resume_extractor.py  # 8B LLM extractor for structured resume facts
 │   │   ├── followup_agent.py
 │   │   ├── tech_search.py    # DuckDuckGo real-time tech lookup
 │   │   └── schemas.py
@@ -361,11 +373,11 @@ ENVIRONMENT=development
 
 ## Supported Roles & Markets
 
-**Roles:** SDE1, SDE2 / Senior SDE, Software Engineer / Associate, Full Stack Engineer, Backend Engineer, Embedded Systems Engineer, VLSI Design Engineer, Data Analyst, Data Scientist, Data Engineer, AI/ML Engineer, AI Engineer, DevOps/SRE, Product Manager, Business Analyst
+**Roles:** SDE1, SDE2 / Senior SDE, Software Engineer / Associate, Full Stack Engineer, Backend Engineer, Embedded Systems Engineer, VLSI Design Engineer, Data Analyst, Data Scientist, Data Engineer, AI Agentic Engineer, DevOps / SRE, Platform Engineer, Product Manager, Business Analyst
 
 **Markets:** India, USA, UAE, Singapore, UK
 
-**Company Types:** Indian Product Company, Indian Service Company, FAANG/Big Tech, Startup, Consulting/IB, Semiconductor/Hardware, MNC India (Non-FAANG)
+**Company Types:** Indian Product Company, Indian Service Company, FAANG / Big Tech, Startup, Consulting / IB, Semiconductor / Hardware, MNC India (Non-FAANG)
 
 ---
 

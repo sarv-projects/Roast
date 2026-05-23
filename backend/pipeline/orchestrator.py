@@ -6,7 +6,9 @@ Runs as a FastAPI BackgroundTask — never blocks the HTTP response.
 
 import asyncio
 import time
+import hashlib
 import structlog
+from datetime import datetime
 from pydantic import BaseModel
 
 from backend.retrieval.dive import run_dive, FullMarketContext
@@ -16,6 +18,7 @@ from backend.agents.six_second_agent import run_six_second_trajectory_agent
 from backend.agents.competitive_agent import run_competitive_agent
 from backend.agents.review_agent import run_review_agent
 from backend.agents.technical_depth_agent import run_technical_depth_agent
+from backend.agents.resume_extractor import extract_resume_facts, facts_to_prompt
 from backend.agents.schemas import (
     MarketContextOutput, RedFlagOutput, SixSecondAndTrajectoryOutput,
     CompetitiveOutput, ReviewOutput, JDRequirements, TechnicalDepthOutput
@@ -24,6 +27,7 @@ from backend.storage.redis_client import redis
 from backend.storage.session_store import update_session
 from backend.corpus.corpus_store import build_signal_from_pipeline, store_signal
 from backend.corpus.bullet_curator import extract_bullet_candidates, flag_bullet_candidate
+from backend.market_data import ensure_seeded, is_market_data_stale
 
 # Import emit lazily to avoid circular imports
 async def _emit(session_id: str, event: str, data: dict) -> None:
@@ -39,8 +43,40 @@ logger = structlog.get_logger()
 _groq_sem = asyncio.Semaphore(2)    # max 2 concurrent Groq calls
 _gemini_sem = asyncio.Semaphore(1)  # max 1 concurrent Gemini call
 _global_sem = asyncio.Semaphore(3)  # max 3 simultaneous full pipelines
-_tech_depth_sem = asyncio.Semaphore(1)  # gpt-oss-120b: 8K TPM — only 1 at a time
+_tech_depth_sem = asyncio.Semaphore(3)  # gpt-oss-120b: 8K TPM per key, 24K with 3 keys — safe for parallel
 
+
+# ── Prompt version tracking ─────────────────────────────────────────────────────
+
+def _compute_prompt_hash(role: str, company_type: str, market: str) -> str:
+    """Generate a version hash from the prompt content for A/B testing."""
+    from backend.agents.prompts.review_prompt import get_review_task
+    from backend.agents.prompts.red_flag_prompt import get_red_flag_task
+    from backend.agents.prompts.six_second_prompt import get_six_second_task
+    from backend.agents.prompts.competitive_prompt import get_competitive_task
+    from backend.agents.prompts.market_context_prompt import get_market_context_task
+    combined = (
+        get_review_task(market, company_type)
+        + get_red_flag_task(role, company_type, market)
+        + get_six_second_task(company_type, market)
+        + get_competitive_task(role, company_type, market)
+        + get_market_context_task()
+    )
+    return hashlib.sha256(combined.encode()).hexdigest()[:12]
+
+
+def _get_prompt_variant(session_id: str) -> str:
+    """
+    Simple A/B routing — 50/50 split based on session_id hash.
+    Returns "A" (current) or "B" (experimental).
+    """
+    import hashlib
+    digest = hashlib.md5(session_id.encode()).hexdigest()
+    # Use last hex digit — 0-7 = A (50%), 8-f = B (50%)
+    return "A" if int(digest[-1], 16) < 8 else "B"
+
+
+# ── Pipeline request/result models ──────────────────────────────────────────────
 
 class PipelineRequest(BaseModel):
     session_id: str
@@ -90,12 +126,34 @@ async def _run_pipeline_inner(request: PipelineRequest) -> PipelineResult:
     start = time.time()
     sid = request.session_id
 
+    # Ensure market data tables exist and are seeded
+    ensure_seeded()
+
+    # Check for stale market data (warn if >90 days since last update)
+    if is_market_data_stale(90):
+        logger.warning("market_data_stale", session_id=sid,
+                       message="Market config data has not been updated in >90 days. Run scripts/seed_market_data.py.")
+        try:
+            from backend.config import DISCORD_WEBHOOK_URL
+            if DISCORD_WEBHOOK_URL:
+                import httpx
+                httpx.post(DISCORD_WEBHOOK_URL, json={
+                    "content": "⚠️ Market config data is >90 days stale. Company lists, salary bands, and role requirements may be outdated. Run `python scripts/update_market_data.py` or update `backend/market_data.py` seed functions."
+                }, timeout=5)
+        except Exception:
+            pass
+
+    # Compute prompt version hash for tracking
+    prompt_version = _compute_prompt_hash(request.role, request.company_type, request.market)
+    prompt_variant = _get_prompt_variant(sid)
+
     logger.info(
         "pipeline_started",
         session_id=sid,
         role=request.role,
         market=request.market,
         company_type=request.company_type,
+        prompt_variant=prompt_variant,
     )
 
     # Update session status
@@ -121,6 +179,9 @@ async def _run_pipeline_inner(request: PipelineRequest) -> PipelineResult:
         session_id=sid,
     )
 
+    # Extract structured resume facts via 8B extractor — shared across all agents
+    resume_facts = await extract_resume_facts(request.resume_text, session_id=sid)
+
     # Format distilled context as text for MarketContextAgent
     distilled_text = _format_distilled_context(full_market_ctx)
 
@@ -139,6 +200,14 @@ async def _run_pipeline_inner(request: PipelineRequest) -> PipelineResult:
             jd_requirements=jd_requirements,
             session_id=sid,
         )
+
+    # Override confidence based on actual signal count — the LLM is too conservative.
+    # 10+ signals retrieved = HIGH confidence, regardless of LLM's LOW judgment.
+    if full_market_ctx.raw_signal_count >= 10 and market_context.confidence == "LOW":
+        market_context.confidence = "HIGH"
+        logger.info("confidence_override", session_id=sid,
+                    signal_count=full_market_ctx.raw_signal_count,
+                    reason="signal_threshold_met")
 
     # Store in session for WebSocket streaming
     _store_section(sid, "market_context", market_context.model_dump())
@@ -177,11 +246,12 @@ async def _run_pipeline_inner(request: PipelineRequest) -> PipelineResult:
             user_context=request.user_context,
             jd_requirements=jd_requirements,
             profile_links=profile_links,
+            resume_facts=resume_facts,
             session_id=sid,
         )
     )
 
-    # SixSecond uses Cerebras, Competitive uses NIM — no Groq semaphore needed
+    # Competitive uses gpt-oss-20b, SixSecond uses qwen3-32b — no Groq semaphore needed
     six_second_task = run_six_second_trajectory_agent(
             resume_text=request.resume_text,
             market_context=market_context,
@@ -204,11 +274,12 @@ async def _run_pipeline_inner(request: PipelineRequest) -> PipelineResult:
             experience_level=request.experience_level,
             user_context=request.user_context,
             jd_requirements=jd_requirements,
+            resume_facts=resume_facts,
             session_id=sid,
         )
 
     # TechnicalDepthAgent — semaphore to prevent gpt-oss-120b TPM overflow
-    # 8K TPM limit, each call uses ~3500 tokens — only 1 concurrent call safe
+    # 24K TPM with 3 keys, each call uses ~3500 tokens — 3 concurrent = 44% safe
     technical_depth_task = _run_with_tech_depth_sem(run_technical_depth_agent(
         resume_text=request.resume_text,
         role=request.role,
@@ -235,7 +306,7 @@ async def _run_pipeline_inner(request: PipelineRequest) -> PipelineResult:
 
     if isinstance(red_flags, Exception):
         logger.error("red_flags_agent_exception", error=str(red_flags), session_id=sid)
-        red_flags = RedFlagOutput(red_flags=[], visual_scan_notes="")
+        red_flags = RedFlagOutput(red_flags=[], visual_scan_notes="", confidence="LOW")
 
     if isinstance(six_second, Exception):
         logger.error("six_second_agent_exception", error=str(six_second), session_id=sid)
@@ -243,6 +314,7 @@ async def _run_pipeline_inner(request: PipelineRequest) -> PipelineResult:
             remembered=[], missed=[], first_impression="Analysis unavailable",
             survived_cut_assessment="MAYBE", career_story="", progression_signal="",
             gaps=[], promotion_velocity="", skill_evolution="",
+            confidence="LOW",
         )
 
     if isinstance(competitive, Exception):
@@ -291,6 +363,7 @@ async def _run_pipeline_inner(request: PipelineRequest) -> PipelineResult:
         user_context=request.user_context,
         jd_requirements=jd_requirements,
         technical_depth=technical_depth,
+        resume_facts=resume_facts,
         session_id=sid,
     )
 
@@ -305,6 +378,7 @@ async def _run_pipeline_inner(request: PipelineRequest) -> PipelineResult:
         "status": "completed",
         "step": "done",
         "duration_seconds": duration,
+        "signal_count": full_market_ctx.raw_signal_count,
     })
 
     # Increment total analyses counter
@@ -356,6 +430,8 @@ async def _run_pipeline_inner(request: PipelineRequest) -> PipelineResult:
         duration_seconds=duration,
         role=request.role,
         market=request.market,
+        prompt_version=prompt_version,
+        prompt_variant=prompt_variant,
     )
 
     return PipelineResult(
@@ -381,11 +457,6 @@ async def _run_with_groq_sem(coro):
 
 async def _run_with_tech_depth_sem(coro):
     async with _tech_depth_sem:
-        return await coro
-
-
-async def _run_with_gemini_sem(coro):
-    async with _gemini_sem:
         return await coro
 
 

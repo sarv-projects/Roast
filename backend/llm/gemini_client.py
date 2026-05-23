@@ -9,6 +9,7 @@ logger = structlog.get_logger()
 
 _keys = [k.strip() for k in GEMINI_API_KEYS.split(",") if k.strip()]
 _current_index = 0
+_index_lock = asyncio.Lock()
 
 # Model IDs
 GEMINI_FLASH_LITE = "gemini-2.5-flash-lite"   # 159 tok/s, thinking disabled
@@ -21,9 +22,10 @@ def _get_client() -> genai.Client:
     return genai.Client(api_key=_keys[_current_index])
 
 
-def _rotate() -> None:
-    global _current_index
-    _current_index = (_current_index + 1) % len(_keys)
+async def _rotate() -> None:
+    async with _index_lock:
+        global _current_index
+        _current_index = (_current_index + 1) % len(_keys)
 
 
 async def gemini_chat(
@@ -71,7 +73,7 @@ async def gemini_chat(
             error_str = str(e).lower()
             if "429" in error_str or "rate limit" in error_str or "quota" in error_str:
                 logger.warning("gemini_rate_limit", model=model, attempt=attempt, session_id=session_id)
-                _rotate()
+                await _rotate()
                 if attempt < 2:
                     await asyncio.sleep(backoff[attempt])
             elif "404" in error_str or "not found" in error_str:

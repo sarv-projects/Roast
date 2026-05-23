@@ -78,33 +78,6 @@ def extract_links(pdf_path: str) -> dict:
     return links
 
 
-def verify_link(url: str, timeout: int = 5) -> dict:
-    """
-    Send a HEAD request to check if a URL responds.
-    HEAD is like GET but the server only returns headers — no body.
-    Faster and lighter than a full GET request.
-    """
-    import httpx
-
-    result = {
-        "url": url,
-        "reachable": False,
-        "status_code": None,
-        "error": None,
-    }
-
-    try:
-        # follow_redirects=True handles LinkedIn's redirect chains
-        response = httpx.head(url, follow_redirects=True, timeout=timeout)
-        result["status_code"] = response.status_code
-        # LinkedIn returns 999 for bots — we treat it as "reachable but gated"
-        result["reachable"] = response.status_code in (200, 999,405)  # 405 if HEAD not allowed, but GET would work
-    except Exception as e:
-        result["error"] = str(e)
-
-    return result
-
-
 def extract_text_from_pdf(pdf_path: str) -> dict:
     """
     Full pipeline: open PDF → extract text → clean → validate.

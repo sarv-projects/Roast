@@ -7,7 +7,11 @@ export function FeedbackButton({ sessionId, role, market, companyType }) {
   const vote = async (useful) => {
     if (voted) return
     setVoted(useful)
-    await submitFeedback({ sessionId, useful, role, market, company_type: companyType })
+    try {
+      await submitFeedback({ sessionId, useful, role, market, company_type: companyType })
+    } catch (e) {
+      console.error('feedback_submit_failed', e)
+    }
   }
 
   if (voted !== null) {

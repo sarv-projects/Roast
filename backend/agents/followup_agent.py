@@ -1,6 +1,6 @@
 import structlog
 from backend.agents.schemas import FollowUpOutput
-from backend.agents.prompts.follow_up_prompt import VERSIONS as FU_VERSIONS, ACTIVE as FU_ACTIVE
+from backend.agents.prompts.follow_up_prompt import get_followup_task
 from backend.llm.router import call_groq_8b
 from backend.storage.redis_client import redis
 
@@ -40,7 +40,7 @@ async def run_followup_agent(
     One per section per session — enforced via Redis key.
     Does NOT consume the daily rate limit.
     """
-    task = FU_VERSIONS[FU_ACTIVE]
+    task = get_followup_task(role, company_type, market)
 
     system = f"""You are an expert resume analyst for {role} roles at {company_type} in {market}.
 {task}"""
@@ -49,8 +49,9 @@ async def run_followup_agent(
         {"role": "system", "content": system},
         {
             "role": "user",
-            "content": f"""RESUME SUMMARY:
+            "content": f"""<resume>
 {resume_text[:1500]}
+</resume>
 
 REVIEW CONTEXT:
 {review_summary[:800]}

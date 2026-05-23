@@ -36,9 +36,9 @@ def _corpus_key(role: str, company_type: str, market: str, week: str) -> str:
 
 
 def _current_week() -> str:
-    """Returns current week in YYYY-WNN format."""
+    """Returns current week in YYYY-WNN format (ISO 8601)."""
     now = datetime.now(timezone.utc)
-    return now.strftime("%Y-W%W")
+    return now.strftime("%Y-W%V")
 
 
 def store_signal(signal: AnonymisedSignal) -> None:
@@ -70,7 +70,7 @@ def get_signals(
         # Calculate week string for each past week
         from datetime import timedelta
         week_date = now - timedelta(weeks=week_offset)
-        week_str = week_date.strftime("%Y-W%W")
+        week_str = week_date.strftime("%Y-W%V")
         key = _corpus_key(role, company_type, market, week_str)
 
         raw_list = redis.lrange(key, 0, -1)

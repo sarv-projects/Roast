@@ -7,7 +7,7 @@ wheels/
 *.egg-info
 .venv/
 *.pyc
-.python-version
+# .python-version
 
 # Environment
 .env
@@ -29,5 +29,5 @@ ROAST_COMPLETE_DEVELOPER_RUNBOOK.md
 
 # Docker
 .dockerignore
-Dockerfile
-docker-compose.yml
+# Dockerfile
+# docker-compose.ymlbackend/.hmac_secret

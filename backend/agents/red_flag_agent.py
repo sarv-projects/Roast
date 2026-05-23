@@ -1,8 +1,8 @@
 import structlog
 from backend.agents.schemas import RedFlagOutput, RedFlag
 from backend.agents.prompts.template import build_system_prompt
-from backend.agents.prompts.red_flag_prompt import VERSIONS as RF_VERSIONS, ACTIVE as RF_ACTIVE
-from backend.agents.schemas import MarketContextOutput, JDRequirements
+from backend.agents.prompts.red_flag_prompt import get_red_flag_task
+from backend.agents.schemas import MarketContextOutput, JDRequirements, ResumeFacts
 from backend.llm.router import call_red_flag_agent, call_groq_8b
 from backend.agents.json_utils import extract_json
 
@@ -42,9 +42,16 @@ async def run_red_flag_agent(
     user_context: str = "",
     jd_requirements: JDRequirements | None = None,
     profile_links: dict | None = None,
+    resume_facts: ResumeFacts | None = None,
     session_id: str = "",
 ) -> RedFlagOutput:
-    task = RF_VERSIONS[RF_ACTIVE]
+    task = get_red_flag_task(role, company_type, market)
+
+    from backend.agents.resume_extractor import facts_to_prompt
+    facts_section = facts_to_prompt(resume_facts) if resume_facts else ""
+    agent_constraints = ""
+    if facts_section:
+        agent_constraints = f"{facts_section}\n\nIMPORTANT: Use the facts above to verify your flags. Do NOT flag something the resume already addresses."
 
     system = build_system_prompt(
         role=role,
@@ -53,6 +60,7 @@ async def run_red_flag_agent(
         experience_level=experience_level,
         agent_task=task,
         agent_output_rules="Return only valid JSON with red_flags array and visual_scan_notes string.",
+        agent_specific_constraints=agent_constraints,
     )
 
     jd_section = ""
@@ -67,8 +75,9 @@ async def run_red_flag_agent(
 
     prompt = f"""{system}
 
-RESUME TEXT:
+<resume>
 {resume_text[:8000]}
+</resume>
 
 MARKET RED FLAG TRIGGERS:
 {chr(10).join(f'- {t}' for t in market_context.red_flag_triggers[:8])}
@@ -100,7 +109,7 @@ Find all red flags and produce the JSON output."""
             )
         except Exception as groq_err:
             logger.error("red_flag_agent_all_failed", error=str(groq_err), session_id=session_id)
-            return RedFlagOutput(red_flags=[], visual_scan_notes="")
+            return RedFlagOutput(red_flags=[], visual_scan_notes="", confidence="LOW")
 
     # ── Parse ─────────────────────────────────────────────────────────────────
     try:
@@ -120,9 +129,15 @@ Find all red flags and produce the JSON output."""
                 logger.warning("red_flag_quality_gate_failed",
                                flag=flag.flag[:50], session_id=session_id)
 
+        # Determine confidence from flag count and quality
+        llm_conf = data.get("confidence", "MEDIUM")
+        if llm_conf not in ("HIGH", "MEDIUM", "LOW"):
+            llm_conf = "MEDIUM"
+
         output = RedFlagOutput(
             red_flags=passed_flags,
             visual_scan_notes=data.get("visual_scan_notes", ""),
+            confidence=llm_conf,
         )
 
         logger.info(
@@ -131,11 +146,12 @@ Find all red flags and produce the JSON output."""
             flags_found=len(passed_flags),
             flags_filtered=len(raw_flags) - len(passed_flags),
             model=meta.get("model"),
-            prompt_version=RF_ACTIVE,
+            prompt_version="v1",
+            confidence=llm_conf,
         )
 
         return output
 
     except Exception as e:
         logger.error("red_flag_agent_parse_failed", error=str(e), session_id=session_id)
-        return RedFlagOutput(red_flags=[], visual_scan_notes="")
+        return RedFlagOutput(red_flags=[], visual_scan_notes="", confidence="LOW")
