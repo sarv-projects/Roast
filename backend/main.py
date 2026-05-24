@@ -52,15 +52,18 @@ async def startup():
     init_ingestion_db()
     logger.info("databases_initialised")
 
-    # Pre-warm DIVE cache for top combos (fire-and-forget)
-    try:
-        from backend.retrieval.dive import warmup_cache
-        results = await warmup_cache()
-        warmed = sum(1 for v in results.values() if v == "warmed")
-        hits = sum(1 for v in results.values() if v == "hit")
-        logger.info("cache_warmup_complete", warmed=warmed, hit=hits, total=len(results))
-    except Exception as e:
-        logger.warning("cache_warmup_failed", error=str(e))
+    # Pre-warm DIVE cache for top combos (non-blocking background task)
+    async def warmup_in_background():
+        try:
+            from backend.retrieval.dive import warmup_cache
+            results = await warmup_cache()
+            warmed = sum(1 for v in results.values() if v == "warmed")
+            hits = sum(1 for v in results.values() if v == "hit")
+            logger.info("cache_warmup_complete", warmed=warmed, hit=hits, total=len(results))
+        except Exception as e:
+            logger.warning("cache_warmup_failed", error=str(e))
+    
+    _ = asyncio.create_task(warmup_in_background())
 
 
 @app.on_event("shutdown")
