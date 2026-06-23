@@ -180,7 +180,7 @@ Percentile estimate + expected CTC range calibrated to your role, company type, 
 
 ### LLM Routing
 | Agent | Model | Provider | Why |
-|---|---|---|---|---|
+|---|---|---|---|
 | MarketContextAgent | llama-3.1-8b-instant | Groq | Lightweight, 14.4K RPD |
 | RedFlagAgent | llama-3.3-70b-versatile → 8b | Groq | Reliable JSON |
 | SixSecondAgent | qwen/qwen3-32b → 8b | Groq | Structured output |
